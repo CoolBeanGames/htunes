@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace HTunes.App;
 
@@ -15,6 +16,7 @@ public partial class MainWindow : Window
     private static readonly string[] AudioExtensions = [".mp3", ".m4a", ".aac", ".wav", ".wma", ".flac", ".ogg"];
     private readonly string dataFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "hTunes", "library.json");
     private readonly MediaPlayer player = new();
+    private readonly DispatcherTimer deviceTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private Point dragStart;
     private string category = "Artist";
     private List<Track> allTracks = [];
@@ -24,8 +26,10 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
-        InitializeComponent(); DataContext = this; LoadLibrary(); RefreshBrowser();
+        InitializeComponent(); DataContext = this; LoadLibrary(); RefreshBrowser(); RefreshDevice();
         player.MediaEnded += (_, _) => NextTrack();
+        deviceTimer.Tick += (_, _) => RefreshDevice();
+        deviceTimer.Start();
     }
 
     private void LoadLibrary()
@@ -36,6 +40,7 @@ public partial class MainWindow : Window
             var data = JsonSerializer.Deserialize<LibraryData>(File.ReadAllText(dataFile));
             if (data is null) return;
             allTracks = data.Tracks.Where(t => File.Exists(t.FilePath)).ToList();
+            foreach (var track in allTracks) MediaMetadata.ReadInto(track, onlyMissing: true);
             foreach (var playlist in data.Playlists) Playlists.Add(playlist);
         }
         catch { }
@@ -117,7 +122,9 @@ public partial class MainWindow : Window
         {
             var fullPath = Path.GetFullPath(file);
             if (allTracks.Any(t => Same(t.FilePath, fullPath))) continue;
-            allTracks.Add(new Track { FilePath = fullPath, Title = Path.GetFileNameWithoutExtension(file), DateAdded = DateTime.Now }); added++;
+            var track = new Track { FilePath = fullPath, Title = Path.GetFileNameWithoutExtension(file), DateAdded = DateTime.Now };
+            MediaMetadata.ReadInto(track);
+            allTracks.Add(track); added++;
         }
         if (added > 0) { SaveLibrary(); RefreshBrowser(); }
     }
@@ -170,6 +177,40 @@ public partial class MainWindow : Window
     }
 
     private void TracksGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e) => PlaySelected();
+
+    private void RefreshDevice()
+    {
+        var device = IPodDetector.FindConnected();
+        if (device is null)
+        {
+            DeviceIndicator.Fill = new SolidColorBrush(Color.FromRgb(146, 154, 167));
+            DeviceNameText.Text = "No iPod connected";
+            DeviceDetailsText.Text = "  •  Connect an iPod to view capacity and sync music";
+            SyncAllButton.IsEnabled = false;
+            DeviceStrip.Tag = null;
+            return;
+        }
+        DeviceIndicator.Fill = new SolidColorBrush(Color.FromRgb(46, 160, 90));
+        DeviceNameText.Text = device.Name;
+        DeviceDetailsText.Text = $"  •  {FormatBytes(device.Capacity)} capacity  •  {FormatBytes(device.FreeSpace)} free  •  Battery unavailable";
+        SyncAllButton.IsEnabled = true;
+        DeviceStrip.Tag = device;
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        var value = (double)bytes; var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1) { value /= 1024; unit++; }
+        return $"{value:0.#} {units[unit]}";
+    }
+
+    private void DeviceStrip_DragOver(object sender, DragEventArgs e) { e.Effects = DeviceStrip.Tag is IPodDevice && e.Data.GetDataPresent("hTunesTracks") ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; }
+    private void DeviceStrip_Drop(object sender, DragEventArgs e)
+    {
+        if (DeviceStrip.Tag is not IPodDevice || e.Data.GetData("hTunesTracks") is not Guid[] ids) return;
+        MessageBox.Show(this, $"{ids.Length} song{(ids.Length == 1 ? "" : "s")} selected for this iPod. Actual iPod database syncing is the next device step.", "iPod detected");
+    }
     private void Play_Click(object sender, RoutedEventArgs e) { if (player.Source is null) PlaySelected(); else player.Play(); }
     private void PlaySelected()
     {
@@ -189,7 +230,7 @@ public partial class MainWindow : Window
     }
     private void About_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this, "hTunes\nA modern Windows music library and iPod companion.", "About hTunes");
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();
-    protected override void OnClosing(System.ComponentModel.CancelEventArgs e) { SaveLibrary(); player.Close(); base.OnClosing(e); }
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e) { deviceTimer.Stop(); SaveLibrary(); player.Close(); base.OnClosing(e); }
 }
 
 public sealed class Track
