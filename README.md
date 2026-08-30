@@ -23,6 +23,13 @@ A Windows music library and iPod companion built with C# and WPF.
 - Safely eject the iPod through Windows
 - Persist the library under the current Windows user's local application data
 - Remember the selected transcoding preset between launches
+- Search Apple Podcasts or subscribe directly with an RSS feed URL
+- Browse subscribed shows and episode artwork, numbers, dates, played state, and download state
+- Download, play, delete, and mark individual podcast episodes played or unplayed
+- Configure each show to sync a chosen number of its newest or oldest unplayed episodes
+- Download missing episodes during podcast sync and mirror those retention rules to the iPod
+- Remove completed podcast downloads from both hTunes and the iPod when playback finishes
+- Preserve podcast and music play-count changes during the same startup/hot-plug reconciliation
 
 Run with `dotnet run --project HTunes.App`.
 

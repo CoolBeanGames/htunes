@@ -38,8 +38,8 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
-        InitializeComponent(); DataContext = this; LoadPreferences(); LoadLibrary(); RefreshBrowser(); RefreshDevice();
-        player.MediaEnded += (_, _) => NextTrack();
+        InitializeComponent(); DataContext = this; LoadPreferences(); LoadLibrary(); InitializePodcastUi(); RefreshBrowser(); RefreshDevice();
+        player.MediaEnded += (_, _) => { if (currentPodcastEpisode is not null) PodcastPlaybackEnded(); else NextTrack(); };
         deviceTimer.Tick += (_, _) => RefreshDevice();
         playCountSyncTimer.Tick += async (_, _) => { playCountSyncTimer.Stop(); if (currentDevice is not null) await ReconcilePlayCountsAsync(currentDevice); };
         deviceTimer.Start();
@@ -164,8 +164,13 @@ public partial class MainWindow : Window
     private void TopTab_Checked(object sender, RoutedEventArgs e)
     {
         if (!IsLoaded || sender is not RadioButton button) return;
-        isIPodView = button.Tag?.ToString() == "IPod";
-        RefreshBrowser();
+        var tab = button.Tag?.ToString();
+        isPodcastView = tab == "Podcasts";
+        isIPodView = tab == "IPod";
+        MusicWorkspace.Visibility = isPodcastView ? Visibility.Collapsed : Visibility.Visible;
+        PodcastWorkspace.Visibility = isPodcastView ? Visibility.Visible : Visibility.Collapsed;
+        UpdateDeviceStripMode();
+        if (isPodcastView) _ = EnterPodcastViewAsync(); else RefreshBrowser();
     }
     private void Category_Checked(object sender, RoutedEventArgs e) { if (!IsLoaded || sender is not RadioButton button) return; category = button.Tag?.ToString() ?? "Artist"; RefreshBrowser(); }
 
@@ -365,15 +370,22 @@ public partial class MainWindow : Window
         SyncAllButton.IsEnabled = EjectButton.IsEnabled = false;
         try
         {
-            var updates = await Task.Run(() => IPodPlayCountService.Reconcile(device.RootPath, allTracks));
-            foreach (var update in updates)
+            var result = await Task.Run(() => IPodPlayCountService.Reconcile(device.RootPath, allTracks, PodcastShows.ToList()));
+            foreach (var update in result.MusicUpdates)
             {
                 var track = allTracks.FirstOrDefault(t => t.Id == update.TrackId);
                 if (track is null) continue;
                 track.PlayCount = update.Count;
                 track.SyncedPlayCounts[update.DeviceId] = update.Count;
             }
-            SaveLibrary(); TracksGrid.Items.Refresh();
+            foreach (var played in result.PlayedPodcasts)
+            {
+                var show = PodcastShows.FirstOrDefault(item => item.Title.Equals(played.ShowTitle, StringComparison.OrdinalIgnoreCase));
+                var episode = show?.Episodes.FirstOrDefault(item => item.Id.Equals(played.EpisodeId, StringComparison.OrdinalIgnoreCase));
+                if (episode is not null) PodcastService.MarkPlayed(episode);
+            }
+            SaveLibrary(); SavePodcastLibrary(); TracksGrid.Items.Refresh();
+            if (isPodcastView) RefreshPodcastShowPanel();
         }
         catch (Exception ex)
         {
@@ -456,7 +468,18 @@ public partial class MainWindow : Window
         if (e.Data.GetData("hTunesTracks") is Guid[] ids) await SyncTracksAsync(ids, randomFill: false);
     }
 
-    private async void SyncAll_Click(object sender, RoutedEventArgs e) => await SyncTracksAsync(allTracks.Select(t => t.Id), randomFill: true);
+    private async void SyncAll_Click(object sender, RoutedEventArgs e)
+    {
+        if (isPodcastView) await SyncAllPodcastsAsync();
+        else await SyncTracksAsync(allTracks.Select(t => t.Id), randomFill: true);
+    }
+
+    private void UpdateDeviceStripMode()
+    {
+        if (TranscodeComboBox is null || SyncAllButton is null) return;
+        TranscodeComboBox.Visibility = isPodcastView ? Visibility.Collapsed : Visibility.Visible;
+        if (!isSyncing) SyncAllButton.Content = isPodcastView ? "Sync podcasts" : "Sync all";
+    }
 
     private async Task SyncTracksAsync(IEnumerable<Guid> ids, bool randomFill, Playlist? playlist = null)
     {
@@ -579,7 +602,7 @@ public partial class MainWindow : Window
         new DependencySetupWindow(tools) { Owner = this }.ShowDialog();
     }
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();
-    protected override void OnClosing(System.ComponentModel.CancelEventArgs e) { deviceTimer.Stop(); playCountSyncTimer.Stop(); SavePreferences(); SaveLibrary(); player.Close(); base.OnClosing(e); }
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e) { deviceTimer.Stop(); playCountSyncTimer.Stop(); SavePreferences(); SavePodcastLibrary(); SaveLibrary(); player.Close(); base.OnClosing(e); }
 }
 
 public sealed class Track
