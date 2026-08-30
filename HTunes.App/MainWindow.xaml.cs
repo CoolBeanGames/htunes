@@ -38,7 +38,7 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
-        InitializeComponent(); DataContext = this; LoadPreferences(); LoadLibrary(); InitializePodcastUi(); RefreshBrowser(); RefreshDevice();
+        InitializeComponent(); DataContext = this; LoadPreferences(); LoadLibrary(); InitializePodcastUi(); InitializeContextMenus(); RefreshBrowser(); RefreshDevice();
         player.MediaEnded += (_, _) => { if (currentPodcastEpisode is not null) PodcastPlaybackEnded(); else NextTrack(); };
         deviceTimer.Tick += (_, _) => RefreshDevice();
         playCountSyncTimer.Tick += async (_, _) => { playCountSyncTimer.Stop(); if (currentDevice is not null) await ReconcilePlayCountsAsync(currentDevice); };
@@ -283,10 +283,7 @@ public partial class MainWindow : Window
     {
         if (isIPodView) return;
         var selected = SelectedTracks();
-        if (selected.Count == 0 || MessageBox.Show(this, $"Remove {selected.Count} selected song(s) from the library? The original files will not be deleted.", "Remove songs", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-        allTracks.RemoveAll(selected.Contains);
-        foreach (var playlist in Playlists) playlist.TrackIds.RemoveAll(id => selected.Any(t => t.Id == id));
-        SaveLibrary(); RefreshBrowser();
+        if (selected.Count > 0) RemoveContextTracks(selected);
     }
 
     private void NewPlaylist_Click(object sender, RoutedEventArgs e)

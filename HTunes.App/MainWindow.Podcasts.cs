@@ -239,6 +239,12 @@ public partial class MainWindow
     private async void PodcastPlayEpisode_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { DataContext: PodcastEpisode episode } || SelectedPodcastShow is not { } show) return;
+        await PlayPodcastEpisodeAsync(show, episode);
+    }
+
+    private async Task PlayPodcastEpisodeAsync(PodcastShow show, PodcastEpisode episode)
+    {
+        if (ReferenceEquals(currentPodcastEpisode, episode)) { player.Play(); return; }
         if (!episode.IsDownloaded && !await DownloadPodcastEpisodeAsync(show, episode)) return;
         if (currentPodcastEpisode is not null) FinalizePodcastPlayback();
         currentPodcastEpisode = episode;

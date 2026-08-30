@@ -23,6 +23,8 @@ A Windows music library and iPod companion built with C# and WPF.
 - Safely eject the iPod through Windows
 - Persist the library under the current Windows user's local application data
 - Remember the selected transcoding preset between launches
+- Right-click songs, artists, albums, genres, playlists, podcast shows/episodes, search results, or the iPod strip for relevant actions
+- Context menus preserve Ctrl/Shift selections and support playing, syncing, metadata/artwork editing, playlist membership, download management, and removal
 - Search Apple Podcasts or subscribe directly with an RSS feed URL
 - Browse subscribed shows and episode artwork, numbers, dates, played state, and download state
 - Download, play, delete, and mark individual podcast episodes played or unplayed
@@ -49,3 +51,9 @@ For a transcoding preset, hTunes can also use `ffmpeg.exe` in one of these locat
 - Anywhere on Windows `PATH`
 
 Selecting **Do not transcode (original)** does not require FFmpeg.
+
+## Context-menu checks
+
+Run `dotnet run --project tests/HTunes.ContextMenuChecks` to check list/grid multi-selection and context-menu selection behavior. These checks do not launch hTunes, load your library, or access an iPod.
+
+**Remove from library** leaves original audio files on disk. **Remove from this playlist** only changes playlist membership; **Delete playlist** leaves its tracks in the library. Podcast **Delete downloaded files** removes local downloads but retains episode entries and played state.
