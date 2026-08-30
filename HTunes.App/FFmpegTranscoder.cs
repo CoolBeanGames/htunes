@@ -15,6 +15,7 @@ internal static class FFmpegTranscoder
     public static string Transcode(string executable, string inputPath, TranscodePreset preset, string temporaryDirectory)
     {
         if (preset.IsOriginal) return inputPath;
+        DebugLog.Write("FFmpeg", $"Transcode starting: {inputPath}; codec={preset.Codec}; bitrate={preset.BitrateKbps}");
         Directory.CreateDirectory(temporaryDirectory);
         var outputPath = Path.Combine(temporaryDirectory, $"{Guid.NewGuid():N}{preset.Extension}");
         var start = new ProcessStartInfo(executable)
@@ -48,8 +49,10 @@ internal static class FFmpegTranscoder
         {
             TryDelete(outputPath);
             var detail = string.IsNullOrWhiteSpace(error) ? $"FFmpeg exited with code {process.ExitCode}." : error.Trim();
+            DebugLog.Write("FFmpeg", detail);
             throw new InvalidDataException(detail);
         }
+        DebugLog.Write("FFmpeg", $"Transcode finished; bytes={new FileInfo(outputPath).Length}");
         return outputPath;
     }
 

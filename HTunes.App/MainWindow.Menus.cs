@@ -83,7 +83,9 @@ public partial class MainWindow
         AddMenuAction(menu, "Eject iPod", () => Eject_Click(this, new RoutedEventArgs()), currentDevice is not null);
         menu.Items.Add(new Separator());
         AddMenuAction(menu, "Update FFmpeg and yt-dlp…", () => UpdateTools_Click(this, new RoutedEventArgs()));
-        AddMenuAction(menu, "Exit", Close);
+        var exit = new MenuItem { Header = "Exit", IsEnabled = !isSyncing && !isReconcilingPlayCounts };
+        exit.Click += (_, _) => ((App)Application.Current).ExitApplication();
+        menu.Items.Add(exit);
     }
 
     private void BuildEditMenu(ItemsControl menu)
@@ -175,11 +177,22 @@ public partial class MainWindow
 
     private void Settings_Click(object sender, RoutedEventArgs e)
     {
-        var panel = new StackPanel { Margin = new Thickness(24) };
-        panel.Children.Add(new TextBlock { Text = "Settings", FontSize = 24, FontWeight = FontWeights.SemiBold });
-        panel.Children.Add(new TextBlock { Text = "Settings will be added here in the next update.", Margin = new Thickness(0, 12, 0, 20) });
-        panel.Children.Add(new Button { Content = "Close", IsCancel = true, HorizontalAlignment = HorizontalAlignment.Right, MinWidth = 80 });
-        new Window { Title = "hTunes Settings", Owner = this, Content = panel, Width = 440, SizeToContent = SizeToContent.Height,
-            ResizeMode = ResizeMode.NoResize, WindowStartupLocation = WindowStartupLocation.CenterOwner }.ShowDialog();
+        if (!ContextActionsAvailable || activePodcastDownloads > 0 || autoSyncRunning) return;
+        new SettingsWindow(SettingsStore.Current, settings =>
+        {
+            var previous = SettingsStore.Current;
+            var startupChanged = previous.OpenOnIPodConnection != settings.OpenOnIPodConnection;
+            if (startupChanged) StartupRegistration.Apply(settings.OpenOnIPodConnection);
+            try { SettingsStore.Save(settings); }
+            catch
+            {
+                if (startupChanged) StartupRegistration.Apply(previous.OpenOnIPodConnection);
+                throw;
+            }
+            ((App)Application.Current).ConfigureWatcher();
+            DebugLog.Write("Settings", $"Saved; import={settings.ImportMode}; autoSync={settings.AutoSyncOnConnection}; playedPercent={settings.PodcastPlayedPercent}");
+            RefreshPodcastShowPanel();
+            if (DebugLog.LastWriteError is { } error) MessageBox.Show(this, "Settings saved, but debug logging could not write: " + error, "Debug logging");
+        }) { Owner = this }.ShowDialog();
     }
 }

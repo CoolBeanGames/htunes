@@ -11,10 +11,11 @@ namespace HTunes.App;
 internal static class PodcastService
 {
     private static readonly HttpClient Client = CreateClient();
-    private static string PodcastDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "hTunes", "podcasts");
+    private static string PodcastDirectory => SettingsStore.Current.PodcastDirectory;
 
     public static async Task<IReadOnlyList<PodcastSearchResult>> SearchAsync(string query, CancellationToken cancellationToken = default)
     {
+        DebugLog.Write("Podcast", "Searching shows");
         var url = $"https://itunes.apple.com/search?media=podcast&entity=podcast&country=US&limit=25&term={Uri.EscapeDataString(query)}";
         using var response = await Client.GetAsync(url, cancellationToken);
         response.EnsureSuccessStatusCode();
@@ -36,6 +37,7 @@ internal static class PodcastService
 
     public static async Task RefreshShowAsync(PodcastShow show, CancellationToken cancellationToken = default)
     {
+        DebugLog.Write("Podcast", $"Refreshing show {show.Id}");
         using var response = await Client.GetAsync(show.FeedUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -83,10 +85,13 @@ internal static class PodcastService
             (string.IsNullOrWhiteSpace(episode.EnclosureUrl) || !refreshedUrls.Contains(episode.EnclosureUrl))));
         show.Episodes = refreshed.OrderByDescending(episode => episode.PublishedUtc).ToList();
         show.LastRefreshedUtc = DateTime.UtcNow;
+        DebugLog.Write("Podcast", $"Refreshed show {show.Id}; episodes={show.Episodes.Count}");
         if (!string.IsNullOrWhiteSpace(show.ArtworkUrl)) show.ArtworkPath = await DownloadArtworkAsync(show, cancellationToken) ?? show.ArtworkPath;
     }
 
-    public static IReadOnlyList<PodcastEpisode> EpisodesForSync(PodcastShow show)
+    public static IReadOnlyList<PodcastEpisode> EpisodesForSync(PodcastShow show) => EpisodesForSync(show, SettingsStore.Current.PodcastIncludeDownloaded);
+
+    internal static IReadOnlyList<PodcastEpisode> EpisodesForSync(PodcastShow show, bool includeDownloaded)
     {
         var unplayed = show.Episodes.Where(episode => !episode.IsPlayed).ToList();
         var ordered = show.SyncOrder.Equals("Oldest", StringComparison.OrdinalIgnoreCase)
@@ -96,7 +101,7 @@ internal static class PodcastService
         // The per-show count controls automatic downloads. A manual download is an explicit request
         // to keep/sync that episode too, even when it falls outside the automatic newest/oldest set.
         return ordered.Take(Math.Max(0, show.SyncEpisodeCount))
-            .Concat(unplayed.Where(episode => episode.IsDownloaded))
+            .Concat(unplayed.Where(episode => includeDownloaded && episode.IsDownloaded))
             .DistinctBy(episode => episode.Id, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
@@ -104,6 +109,7 @@ internal static class PodcastService
     public static async Task DownloadEpisodeAsync(PodcastShow show, PodcastEpisode episode, IProgress<double>? progress = null, CancellationToken cancellationToken = default)
     {
         if (episode.IsDownloaded) return;
+        DebugLog.Write("Podcast download", $"Starting show={show.Id}");
         var showDirectory = Path.Combine(PodcastDirectory, show.Id.ToString("N"));
         Directory.CreateDirectory(showDirectory);
         var extension = Extension(episode.EnclosureUrl, episode.MimeType);
@@ -130,6 +136,7 @@ internal static class PodcastService
             }
             File.Move(temporaryPath, finalPath, true);
             episode.LocalPath = finalPath;
+            DebugLog.Write("Podcast download", $"Finished: {finalPath}; bytes={new FileInfo(finalPath).Length}");
             try
             {
                 using var media = TagLib.File.Create(finalPath);
@@ -145,7 +152,8 @@ internal static class PodcastService
     {
         episode.IsPlayed = true;
         episode.PlayedUtc = DateTime.UtcNow;
-        if (deleteDownload) DeleteDownload(episode);
+        DebugLog.Write("Podcast playback", $"Marked played; position={episode.PlaybackPositionMs}ms; duration={episode.DurationMs}ms");
+        if (deleteDownload && SettingsStore.Current.PodcastDeletePlayedDownloads) DeleteDownload(episode);
     }
 
     public static void MarkUnplayed(PodcastEpisode episode)
@@ -157,9 +165,17 @@ internal static class PodcastService
 
     public static void DeleteDownload(PodcastEpisode episode)
     {
-        if (!string.IsNullOrWhiteSpace(episode.LocalPath)) TryDelete(episode.LocalPath);
-        episode.LocalPath = null;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(episode.LocalPath)) File.Delete(episode.LocalPath);
+            DebugLog.Write("Podcast download", $"Deleted: {episode.LocalPath}");
+            episode.LocalPath = null;
+        }
+        catch (Exception ex) { DebugLog.Write("Podcast download", "Deletion failed; retained file reference for retry", ex); }
     }
+
+    internal static bool ReachedPlayedThreshold(long positionMs, long durationMs, int percent) =>
+        durationMs > 0 && positionMs >= durationMs * (Math.Clamp(percent, 1, 100) / 100m);
 
     private static async Task<string?> DownloadArtworkAsync(PodcastShow show, CancellationToken cancellationToken)
     {
@@ -199,8 +215,8 @@ internal static class PodcastService
     private static long ParseDuration(string? value, long fallback)
     {
         if (string.IsNullOrWhiteSpace(value)) return fallback;
-        if (TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out var duration)) return Math.Max(0, (long)duration.TotalMilliseconds);
-        return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) ? Math.Max(0, (long)(seconds * 1000)) : fallback;
+        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)) return Math.Max(0, (long)(seconds * 1000));
+        return TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out var duration) ? Math.Max(0, (long)duration.TotalMilliseconds) : fallback;
     }
 
     private static string StripMarkup(string value)

@@ -40,6 +40,7 @@ internal static class ToolDependencyManager
 
     public static async Task<IReadOnlyList<ToolIssue>> CheckForUpdatesAsync(CancellationToken cancellationToken = default)
     {
+        DebugLog.Write("Tools", "Checking missing tools and updates");
         var issues = MissingTools().Select(tool => new ToolIssue(tool, ToolIssueKind.Missing)).ToList();
         if (issues.Count > 0) return issues;
         var checks = new List<Task<ToolIssue?>>();
@@ -77,10 +78,12 @@ internal static class ToolDependencyManager
         IProgress<ToolDownloadProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        DebugLog.Write("Tools", $"Installing: {string.Join(", ", tools)}");
         Directory.CreateDirectory(ToolsDirectory);
         if (tools.Contains(ExternalTool.YtDlp)) await DownloadYtDlpAsync(progress, cancellationToken);
         if (tools.Contains(ExternalTool.FFmpeg)) await DownloadFFmpegAsync(progress, cancellationToken);
         progress?.Report(new ToolDownloadProgress("All required tools are ready.", 100));
+        DebugLog.Write("Tools", "Installation finished");
     }
 
     private static async Task DownloadYtDlpAsync(IProgress<ToolDownloadProgress>? progress, CancellationToken cancellationToken)

@@ -1,4 +1,6 @@
 using System.Reflection;
+using System.IO;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using HTunes.App;
@@ -20,7 +22,11 @@ internal static class Program
             CheckHistory();
             CheckMetadataHistoryIsolation();
             CheckTopMenuRebuild();
-            Console.WriteLine("PASS: menu selection, top-menu refresh, undo/redo, history limits, failure handling, and play-count isolation.");
+            CheckSettings();
+            CheckImportFileSafety();
+            CheckPodcastPolicies();
+            CheckSettingsWindow();
+            Console.WriteLine("PASS: menus/history, settings persistence and validation, yt-dlp arguments, import copy/move safety, podcast policies, debug redaction, and Settings UI.");
             return 0;
         }
         catch (Exception ex)
@@ -126,5 +132,156 @@ internal static class Program
     private static void Require(bool condition, string message)
     {
         if (!condition) throw new InvalidOperationException(message);
+    }
+
+    private static void CheckSettings()
+    {
+        InTemporaryDirectory(directory =>
+        {
+            var path = Path.Combine(directory, "settings.json");
+            File.WriteAllText(path, "{\"TranscodePresetId\":\"mp3-192\"}");
+            var legacy = SettingsStore.Read(path);
+            Require(legacy.TranscodePresetId == "mp3-192" && legacy.PodcastPlayedPercent == 50 && legacy.ImportMode == ImportFileMode.Reference,
+                "Old settings must retain the preset and receive safe new defaults.");
+            Require(!legacy.OpenOnIPodConnection && !legacy.AutoSyncOnConnection && !legacy.DebugLogging, "Background launch, sync, and logging must be opt-in.");
+            var changed = legacy.Clone();
+            changed.DownloadDirectory = Path.Combine(directory, "downloads with spaces & punctuation");
+            changed.PodcastDirectory = Path.Combine(directory, "podcasts");
+            changed.ImportDirectory = Path.Combine(directory, "music");
+            changed.ImportMode = ImportFileMode.Copy;
+            changed.PodcastDefaultCount = 8; changed.PodcastPlayedPercent = 75;
+            changed.PodcastDeletePlayedDownloads = false; changed.PodcastIncludeDownloaded = false;
+            changed.YtPlaylistAsAlbum = true; changed.YtEmbedMetadata = false;
+            changed.YtAudioFormat = "flac"; changed.YtAudioQuality = "0";
+            changed.CheckToolUpdatesOnStartup = false;
+            SettingsStore.Write(path, changed);
+            var loaded = SettingsStore.Read(path);
+            Require(JsonSerializer.Serialize(loaded) == JsonSerializer.Serialize(changed), "All settings must round-trip.");
+            Require(SettingsStore.Read(path + ".bak").TranscodePresetId == "mp3-192", "Saving must preserve the preceding settings as a backup.");
+            loaded.TranscodePresetId = "original";
+            SettingsStore.Write(path, loaded);
+            Require(SettingsStore.Read(path).PodcastPlayedPercent == 75, "Saving a transcode preference must not erase other settings.");
+            Require(legacy.ImportMode == ImportFileMode.Reference && legacy.PodcastDefaultCount == 3, "Editing a clone must not change live preferences before Save.");
+            var arguments = YtDlpSettings.BuildArguments(changed).ToList();
+            Require(arguments.Contains("--embed-metadata") && arguments.Contains("playlist_title:%(meta_album)s"), "Playlist album metadata requires metadata embedding.");
+            Require(arguments[arguments.IndexOf("--paths") + 1] == changed.DownloadDirectory, "A path must be one literal argument, never shell text.");
+            Require(arguments.Contains("--no-playlist") && !arguments.Contains("--yes-playlist"), "Playlist download must default off.");
+            var invalid = changed.Clone(); invalid.PodcastPlayedPercent = 0;
+            ExpectFailure(() => SettingsStore.Write(path, invalid), "Invalid settings must be rejected before replacing the saved file.");
+            Require(SettingsStore.Read(path).PodcastPlayedPercent == 75, "Rejected settings must leave the saved file unchanged.");
+            invalid = changed.Clone(); invalid.ImportDirectory = "relative\\folder";
+            ExpectFailure(() => SettingsStore.Validate(invalid), "Relative storage paths must be rejected.");
+            invalid.ImportDirectory = Path.Combine(directory, "invalid*folder");
+            ExpectFailure(() => SettingsStore.Validate(invalid), "Invalid folder names must be rejected.");
+            invalid.ImportDirectory = path;
+            ExpectFailure(() => SettingsStore.Validate(invalid), "A file cannot be used as a storage folder.");
+            Require(!Directory.EnumerateFiles(directory, "*.tmp").Any(), "Settings writes must clean temporary files.");
+            File.WriteAllText(path, "not json");
+            ExpectFailure(() => SettingsStore.Read(path), "Corrupt JSON must be detected.");
+        });
+        var redacted = DebugLog.Sanitize("failure https://example.org/private?token=secret\r\nsecond line");
+        Require(!redacted.Contains("secret") && !redacted.Contains('\n') && redacted.Contains("[URL removed]"), "Debug logs must redact URLs and normalize newlines.");
+    }
+
+    private static void CheckImportFileSafety()
+    {
+        InTemporaryDirectory(directory =>
+        {
+            var sourceFolder = Path.Combine(directory, "source");
+            Directory.CreateDirectory(sourceFolder);
+            var source = Path.Combine(sourceFolder, "track.mp3");
+            File.WriteAllText(source, "test audio bytes");
+            var settings = new AppPreferences { ImportDirectory = Path.Combine(directory, "managed") };
+            var reference = ImportFileService.Prepare(source, settings);
+            Require(reference.LibraryPath == source && !reference.DeleteSourceAfterSave && !Directory.Exists(settings.ImportDirectory), "Reference import must leave files untouched.");
+            settings.ImportMode = ImportFileMode.Copy;
+            var copy = ImportFileService.Prepare(source, settings);
+            Require(File.ReadAllText(copy.LibraryPath) == "test audio bytes" && File.Exists(source) && !copy.DeleteSourceAfterSave, "Copy import must preserve original bytes and file.");
+            var second = ImportFileService.Prepare(source, settings);
+            Require(second.LibraryPath != copy.LibraryPath && File.Exists(copy.LibraryPath), "Name collisions must not overwrite existing files.");
+            var alreadyManaged = ImportFileService.Prepare(copy.LibraryPath, settings);
+            Require(alreadyManaged.LibraryPath == copy.LibraryPath && !alreadyManaged.DeleteSourceAfterSave, "Files already in the managed folder must not copy onto themselves.");
+            settings.ImportMode = ImportFileMode.Move;
+            var move = ImportFileService.Prepare(source, settings);
+            Require(move.DeleteSourceAfterSave && File.Exists(source) && File.Exists(move.LibraryPath), "Preparing a move must keep the original until the library save completes.");
+            ImportFileService.CompleteMove(move);
+            Require(!File.Exists(source) && File.ReadAllText(move.LibraryPath) == "test audio bytes", "Completing a verified move removes only the original.");
+            File.WriteAllText(source, "original");
+            var changed = ImportFileService.Prepare(source, settings);
+            File.WriteAllText(source, "changed after copy");
+            ExpectFailure(() => ImportFileService.CompleteMove(changed), "Changed original must be retained.");
+            Require(File.Exists(source), "Original must survive failed verification.");
+            var damagedCopy = ImportFileService.Prepare(source, settings);
+            File.WriteAllText(damagedCopy.LibraryPath, "damaged destination");
+            ExpectFailure(() => ImportFileService.CompleteMove(damagedCopy), "Changed destination must prevent original deletion.");
+            Require(File.Exists(source), "Original must survive a damaged copy.");
+            Require(!Directory.EnumerateFiles(settings.ImportDirectory, "*.tmp").Any(), "Import must clean staging files.");
+        });
+    }
+
+    private static void CheckPodcastPolicies()
+    {
+        Require(!PodcastService.ReachedPlayedThreshold(499, 1000, 50) && PodcastService.ReachedPlayedThreshold(500, 1000, 50), "Default threshold is exactly 50 percent.");
+        Require(!PodcastService.ReachedPlayedThreshold(749, 1000, 75) && PodcastService.ReachedPlayedThreshold(750, 1000, 75), "Custom threshold must apply exactly.");
+        Require(!PodcastService.ReachedPlayedThreshold(100, 0, 50), "Unknown duration must not mark an episode played.");
+        Require(PodcastService.ReachedPlayedThreshold(long.MaxValue, long.MaxValue, 100), "Threshold calculation must not overflow.");
+        InTemporaryDirectory(directory =>
+        {
+            var downloaded = Path.Combine(directory, "old.mp3"); File.WriteAllText(downloaded, "test");
+            var oldest = new PodcastEpisode { Id = "old", PublishedUtc = DateTime.UtcNow.AddDays(-2), LocalPath = downloaded };
+            var newest = new PodcastEpisode { Id = "new", PublishedUtc = DateTime.UtcNow };
+            var played = new PodcastEpisode { Id = "played", PublishedUtc = DateTime.UtcNow.AddDays(1), IsPlayed = true };
+            var show = new PodcastShow { SyncEpisodeCount = 1, SyncOrder = "Newest", Episodes = [oldest, newest, played] };
+            Require(PodcastService.EpisodesForSync(show, false).SequenceEqual([newest]), "Strict rule must select only the newest unplayed episode.");
+            Require(PodcastService.EpisodesForSync(show, true).SequenceEqual([newest, oldest]), "Include-downloads must retain downloaded episodes outside the rule.");
+            show.SyncOrder = "Oldest";
+            Require(PodcastService.EpisodesForSync(show, false).SequenceEqual([oldest]), "Oldest selection must be supported.");
+            show.SyncEpisodeCount = 0;
+            Require(PodcastService.EpisodesForSync(show, false).Count == 0, "Zero with include-downloads off must select no episodes.");
+            using (var locked = new FileStream(downloaded, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                PodcastService.DeleteDownload(oldest);
+                Require(oldest.LocalPath == downloaded, "Failed deletion must retain the file reference for retry.");
+            }
+            PodcastService.DeleteDownload(oldest);
+            Require(oldest.LocalPath is null && !File.Exists(downloaded), "A successful deletion must clear the file reference.");
+        });
+    }
+
+    private static void CheckSettingsWindow()
+    {
+        var settings = new AppPreferences();
+        var saved = false;
+        var window = new SettingsWindow(settings, _ => saved = true);
+        var root = (DockPanel)window.Content;
+        root.Measure(new Size(730, 600)); root.Arrange(new Rect(0, 0, 730, 600)); root.UpdateLayout();
+        var tabs = root.Children.OfType<TabControl>().Single();
+        Require(tabs.Items.Count == 5, "Settings must expose all five sections.");
+        foreach (TabItem tab in tabs.Items)
+        {
+            tabs.SelectedItem = tab; root.UpdateLayout();
+            Require(((ScrollViewer)tab.Content).Content is StackPanel panel && panel.Children.Count > 0, "Every settings section must have working controls.");
+        }
+        Require(!saved && settings.ImportMode == ImportFileMode.Reference, "Opening settings must not save or change user data.");
+        window.Close();
+    }
+
+    private static void ExpectFailure(Action action, string message)
+    {
+        try { action(); } catch (Exception) { return; }
+        throw new InvalidOperationException(message);
+    }
+
+    private static void InTemporaryDirectory(Action<string> check)
+    {
+        var directory = Directory.CreateTempSubdirectory("htunes-settings-check-").FullName;
+        try { check(directory); }
+        finally
+        {
+            var fullPath = Path.GetFullPath(directory);
+            var tempRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath())) + Path.DirectorySeparatorChar;
+            if (fullPath.StartsWith(tempRoot, StringComparison.OrdinalIgnoreCase) && Path.GetFileName(fullPath).StartsWith("htunes-settings-check-", StringComparison.Ordinal))
+                Directory.Delete(fullPath, recursive: true);
+        }
     }
 }

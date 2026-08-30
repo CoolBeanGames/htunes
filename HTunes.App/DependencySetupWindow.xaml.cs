@@ -44,6 +44,7 @@ public partial class DependencySetupWindow : Window
         }
         catch (Exception ex)
         {
+            DebugLog.Write("Tools", "Download / installation failed", ex);
             isDownloading = false;
             ProgressText.Text = "The tools were not installed.";
             DownloadProgress.Visibility = Visibility.Collapsed;

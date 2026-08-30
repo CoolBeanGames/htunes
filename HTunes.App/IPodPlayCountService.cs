@@ -17,6 +17,7 @@ internal static class IPodPlayCountService
 {
     public static PlayCountReconcileResult Reconcile(string rootPath, IReadOnlyCollection<Track> library, IReadOnlyCollection<PodcastShow> podcastShows)
     {
+        DebugLog.Write("Listening", $"Reconciling {rootPath}; tracks={library.Count}; shows={podcastShows.Count}");
         var dbPath = DatabasePath(rootPath);
         var playCountsPath = Path.Combine(rootPath, "iPod_Control", "iTunes", "Play Counts");
         var backupDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "hTunes", "ipod-backups");
@@ -53,7 +54,8 @@ internal static class IPodPlayCountService
                     var position = Math.Max(ipodPosition, podcast.Value.Episode.PlaybackPositionMs);
                     var ipodDuration = (long)ipodTrack.Length.MilliSeconds;
                     var duration = ipodDuration > 0 ? ipodDuration : podcast.Value.Episode.DurationMs;
-                    var isPlayed = podcast.Value.Episode.IsPlayed || ipodTrack.PlayCount > 0 || duration > 0 && position * 2L >= duration;
+                    var isPlayed = podcast.Value.Episode.IsPlayed || ipodTrack.PlayCount > 0 || PodcastService.ReachedPlayedThreshold(position, duration, SettingsStore.Current.PodcastPlayedPercent);
+                    DebugLog.Write("Listening", $"Podcast position={position}ms; duration={duration}ms; played={isPlayed}; threshold={SettingsStore.Current.PodcastPlayedPercent}%");
                     podcastUpdates.Add(new PodcastPlaybackUpdate(podcast.Value.Episode.Id, podcast.Value.Show.Title, position, duration, isPlayed));
                     if (isPlayed)
                     {
@@ -78,6 +80,7 @@ internal static class IPodPlayCountService
             }
             ipod.SaveChanges();
             CleanupBackups(backupDirectory);
+            DebugLog.Write("Listening", $"Reconciled: musicUpdates={updates.Count}; podcastUpdates={podcastUpdates.Count}; removedPlayed={removedMedia.Count}");
             return new PlayCountReconcileResult(updates, podcastUpdates);
         }
         catch

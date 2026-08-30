@@ -10,7 +10,12 @@ namespace HTunes.App;
 public partial class MainWindow
 {
     private bool contextActionRunning;
-    private bool ContextActionsAvailable => !contextActionRunning && !isSyncing && !isReconcilingPlayCounts;
+    private bool ContextActionsAvailable => !contextActionRunning && !isSyncing && !isReconcilingPlayCounts && !autoSyncRunning && activePodcastDownloads == 0 && podcastFeedOperations == 0;
+
+    private void UpdateBusyWorkspaces()
+    {
+        MusicWorkspace.IsEnabled = PodcastWorkspace.IsEnabled = ContextActionsAvailable;
+    }
 
     private void InitializeContextMenus()
     {
@@ -94,12 +99,13 @@ public partial class MainWindow
             try { await action(); }
             catch (Exception ex)
             {
+                DebugLog.Write("Action", title, ex);
                 MessageBox.Show(this, ex.GetBaseException().Message, "Action could not be completed", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             finally
             {
                 contextActionRunning = false;
-                MusicWorkspace.IsEnabled = PodcastWorkspace.IsEnabled = true;
+                UpdateBusyWorkspaces();
             }
         };
         menu.Items.Add(item);
@@ -275,7 +281,7 @@ public partial class MainWindow
         menu.Items.Add(new Separator());
         AddMenuAction(menu, "Mark all episodes played…", () =>
         {
-            if (MessageBox.Show(this, "Mark every episode in this show played? Downloaded episodes will be deleted, and synced copies will be removed during iPod reconciliation.",
+            if (MessageBox.Show(this, "Mark every episode in this show played? Local downloads follow your deletion setting; synced copies will be removed during iPod reconciliation.",
                 "Mark all played", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
                 SetEpisodesPlayed(show.Episodes.ToList(), true);
         });
@@ -304,7 +310,7 @@ public partial class MainWindow
         menu.Items.Add(new Separator());
         AddMenuAction(menu, "Mark played…", () =>
         {
-            if (MessageBox.Show(this, $"Mark {episodes.Count} selected episode(s) played?\n\nTheir downloads will be deleted and synced copies removed during iPod reconciliation.",
+            if (MessageBox.Show(this, $"Mark {episodes.Count} selected episode(s) played?\n\nLocal downloads follow your deletion setting; synced copies are removed during iPod reconciliation.",
                 "Mark episodes played", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
                 SetEpisodesPlayed(episodes, true);
         }, episodes.Any(episode => !episode.IsPlayed));

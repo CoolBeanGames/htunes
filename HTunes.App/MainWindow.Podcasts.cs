@@ -18,6 +18,9 @@ public partial class MainWindow
     private PodcastShow? currentPodcastPlaybackShow;
     private readonly DispatcherTimer podcastPlaybackTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private DateTime lastPodcastProgressSaveUtc;
+    private int activePodcastDownloads;
+    private int podcastFeedOperations;
+    private readonly Dictionary<PodcastEpisode, Task<bool>> podcastDownloads = [];
     public ObservableCollection<PodcastShow> PodcastShows { get; } = [];
     public ObservableCollection<PodcastSearchResult> PodcastSearchResults { get; } = [];
 
@@ -56,7 +59,7 @@ public partial class MainWindow
                 PodcastShows.Add(show);
             }
         }
-        catch { }
+        catch (Exception ex) { DebugLog.Write("Podcast library", "Could not load saved subscriptions", ex); }
     }
 
     private void SavePodcastLibrary()
@@ -70,7 +73,7 @@ public partial class MainWindow
     private async Task EnterPodcastViewAsync()
     {
         RefreshPodcastShowPanel();
-        if (podcastsRefreshedThisSession || PodcastShows.Count == 0) return;
+        if (!SettingsStore.Current.PodcastRefreshOnOpen || podcastsRefreshedThisSession || PodcastShows.Count == 0) return;
         podcastsRefreshedThisSession = true;
         await RefreshShowsAsync(PodcastShows.Where(show => DateTime.UtcNow - show.LastRefreshedUtc > TimeSpan.FromMinutes(15)).ToList());
     }
@@ -86,6 +89,7 @@ public partial class MainWindow
     {
         var query = PodcastSearchBox.Text.Trim();
         if (string.IsNullOrWhiteSpace(query)) return;
+        podcastFeedOperations++; UpdateBusyWorkspaces();
         PodcastSearchButton.IsEnabled = false;
         try
         {
@@ -101,7 +105,7 @@ public partial class MainWindow
             if (results.Count == 0) MessageBox.Show(this, "No podcast shows matched that search.", "No results");
         }
         catch (Exception ex) { MessageBox.Show(this, $"Podcast search failed.\n\n{ex.GetBaseException().Message}", "Search failed", MessageBoxButton.OK, MessageBoxImage.Warning); }
-        finally { PodcastSearchButton.IsEnabled = true; }
+        finally { PodcastSearchButton.IsEnabled = true; podcastFeedOperations--; UpdateBusyWorkspaces(); }
     }
 
     private async void PodcastSubscribe_Click(object sender, RoutedEventArgs e)
@@ -113,7 +117,9 @@ public partial class MainWindow
     {
         var existing = PodcastShows.FirstOrDefault(show => Same(show.FeedUrl, result.FeedUrl));
         if (existing is not null) { PodcastShowsList.SelectedItem = existing; return; }
-        var show = new PodcastShow { Title = result.Title, Author = result.Author, FeedUrl = result.FeedUrl, ArtworkUrl = result.ArtworkUrl };
+        var show = new PodcastShow { Title = result.Title, Author = result.Author, FeedUrl = result.FeedUrl, ArtworkUrl = result.ArtworkUrl,
+            SyncEpisodeCount = SettingsStore.Current.PodcastDefaultCount, SyncOrder = SettingsStore.Current.PodcastDefaultOrder };
+        podcastFeedOperations++; UpdateBusyWorkspaces();
         try
         {
             PodcastSearchButton.IsEnabled = false;
@@ -124,9 +130,10 @@ public partial class MainWindow
             SavePodcastLibrary();
             PodcastShowsList.Items.Refresh();
             PodcastShowsList.SelectedItem = show;
+            await AutoDownloadShowAsync(show);
         }
         catch (Exception ex) { MessageBox.Show(this, $"hTunes could not subscribe to this feed.\n\n{ex.GetBaseException().Message}", "Subscription failed", MessageBoxButton.OK, MessageBoxImage.Warning); }
-        finally { PodcastSearchButton.IsEnabled = true; }
+        finally { PodcastSearchButton.IsEnabled = true; podcastFeedOperations--; UpdateBusyWorkspaces(); }
     }
 
     private void PodcastShowsList_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshPodcastShowPanel();
@@ -140,6 +147,7 @@ public partial class MainWindow
         PodcastEmptyState.Visibility = show is null || show.Episodes.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         PodcastSyncCountBox.Text = show?.SyncEpisodeCount.ToString() ?? "3";
         PodcastSyncOrderCombo.SelectedIndex = show?.SyncOrder.Equals("Oldest", StringComparison.OrdinalIgnoreCase) == true ? 1 : 0;
+        PodcastRuleHint.Text = SettingsStore.Current.PodcastIncludeDownloaded ? "unplayed episodes, plus manually downloaded episodes" : "unplayed episodes only";
         SetPodcastArtwork(show?.ArtworkDisplay);
         PodcastShowsList.Items.Refresh();
         PodcastEpisodesGrid.Items.Refresh();
@@ -158,17 +166,30 @@ public partial class MainWindow
 
     private async Task RefreshShowsAsync(IReadOnlyCollection<PodcastShow> shows)
     {
-        foreach (var show in shows)
+        podcastFeedOperations++; UpdateBusyWorkspaces();
+        try
         {
-            try
+            foreach (var show in shows)
             {
-                PodcastShowSummary.Text = $"Refreshing {show.Title}…";
-                await PodcastService.RefreshShowAsync(show);
+                try
+                {
+                    PodcastShowSummary.Text = $"Refreshing {show.Title}…";
+                    await PodcastService.RefreshShowAsync(show);
+                    await AutoDownloadShowAsync(show);
+                }
+                catch (Exception ex) { DebugLog.Write("Podcast", $"Feed refresh failed for {show.Id}", ex); PodcastShowSummary.Text = $"Could not refresh {show.Title}: {ex.GetBaseException().Message}"; }
             }
-            catch (Exception ex) { PodcastShowSummary.Text = $"Could not refresh {show.Title}: {ex.GetBaseException().Message}"; }
+            SavePodcastLibrary();
+            RefreshPodcastShowPanel();
         }
-        SavePodcastLibrary();
-        RefreshPodcastShowPanel();
+        finally { podcastFeedOperations--; UpdateBusyWorkspaces(); }
+    }
+
+    private async Task AutoDownloadShowAsync(PodcastShow show)
+    {
+        if (!SettingsStore.Current.PodcastAutoDownloadOnRefresh) return;
+        foreach (var episode in PodcastService.EpisodesForSync(show))
+            if (!episode.IsDownloaded) await DownloadPodcastEpisodeAsync(show, episode);
     }
 
     private void PodcastSaveRule_Click(object sender, RoutedEventArgs e)
@@ -221,14 +242,25 @@ public partial class MainWindow
 
     private async Task<bool> DownloadPodcastEpisodeAsync(PodcastShow show, PodcastEpisode episode)
     {
+        if (podcastDownloads.TryGetValue(episode, out var pending)) return await pending;
+        var task = DownloadPodcastEpisodeCoreAsync(show, episode);
+        podcastDownloads[episode] = task;
+        try { return await task; }
+        finally { podcastDownloads.Remove(episode); }
+    }
+
+    private async Task<bool> DownloadPodcastEpisodeCoreAsync(PodcastShow show, PodcastEpisode episode)
+    {
         if (episode.IsDownloaded) return true;
+        activePodcastDownloads++; UpdateBusyWorkspaces();
         try
         {
             PodcastShowSummary.Text = $"Downloading {episode.Title}…";
             await PodcastService.DownloadEpisodeAsync(show, episode, new Progress<double>(value => PodcastShowSummary.Text = $"Downloading {episode.Title}… {value:0}%"));
             SavePodcastLibrary(); RefreshPodcastShowPanel(); return true;
         }
-        catch (Exception ex) { MessageBox.Show(this, $"Episode download failed.\n\n{ex.GetBaseException().Message}", "Download failed", MessageBoxButton.OK, MessageBoxImage.Warning); return false; }
+        catch (Exception ex) { DebugLog.Write("Podcast download", "Failed", ex); MessageBox.Show(this, $"Episode download failed.\n\n{ex.GetBaseException().Message}", "Download failed", MessageBoxButton.OK, MessageBoxImage.Warning); return false; }
+        finally { activePodcastDownloads--; UpdateBusyWorkspaces(); }
     }
 
     private void PodcastDeleteEpisodeDownload_Click(object sender, RoutedEventArgs e)
@@ -282,7 +314,7 @@ public partial class MainWindow
             if (player.NaturalDuration.HasTimeSpan)
                 episode.DurationMs = Math.Max(0, (long)player.NaturalDuration.TimeSpan.TotalMilliseconds);
             episode.PlaybackPositionMs = Math.Max(episode.PlaybackPositionMs, (long)player.Position.TotalMilliseconds);
-            if (!episode.IsPlayed && episode.DurationMs > 0 && episode.PlaybackPositionMs * 2L >= episode.DurationMs)
+            if (!episode.IsPlayed && PodcastService.ReachedPlayedThreshold(episode.PlaybackPositionMs, episode.DurationMs, SettingsStore.Current.PodcastPlayedPercent))
             {
                 PodcastService.MarkPlayed(episode, deleteDownload: false);
                 SavePodcastLibrary();
@@ -349,19 +381,25 @@ public partial class MainWindow
             await SyncPodcastSelectionsAsync([new PodcastEpisodeSelection(show, episode)], mirrorSubscriptions: false);
     }
 
-    private async Task SyncAllPodcastsAsync()
+    private Task SyncAllPodcastsAsync() => SyncAllPodcastsAsync(showSummary: true);
+
+    private async Task SyncAllPodcastsAsync(bool showSummary)
     {
         var selections = PodcastShows.SelectMany(show => PodcastService.EpisodesForSync(show).Select(episode => new PodcastEpisodeSelection(show, episode))).ToList();
-        await SyncPodcastSelectionsAsync(selections, mirrorSubscriptions: true);
+        await SyncPodcastSelectionsAsync(selections, mirrorSubscriptions: SettingsStore.Current.PodcastMirrorOnSync, showSummary);
     }
 
-    private async Task SyncPodcastSelectionsAsync(IReadOnlyCollection<PodcastEpisodeSelection> selections, bool mirrorSubscriptions)
+    private async Task SyncPodcastSelectionsAsync(IReadOnlyCollection<PodcastEpisodeSelection> selections, bool mirrorSubscriptions, bool showSummary = true)
     {
         if (isSyncing || isReconcilingPlayCounts || currentDevice is null) return;
         var device = currentDevice;
         isSyncing = true; deviceTimer.Stop(); SyncAllButton.IsEnabled = EjectButton.IsEnabled = false; SyncAllButton.Content = "Syncing…";
+        UpdateBusyWorkspaces();
         try
         {
+            DebugLog.Write("Podcast sync", $"Starting episodes={selections.Count}; mirror={mirrorSubscriptions}");
+            if (!SettingsStore.Current.PodcastDownloadOnSync && selections.Any(selection => !selection.Episode.IsDownloaded))
+                throw new InvalidOperationException("Download the selected episodes first, or enable download-on-sync in Settings. No changes were made to the iPod.");
             if (!await EnsureIPodPreparedAsync(device)) return;
             var completed = 0;
             foreach (var selection in selections)
@@ -374,9 +412,10 @@ public partial class MainWindow
             var ready = selections.Where(selection => selection.Episode.IsDownloaded).ToList();
             var result = await Task.Run(() => PodcastIPodSyncService.Sync(device.RootPath, ready, PodcastShows.ToList(), mirrorSubscriptions));
             await LoadIPodTracksAsync(device);
-            MessageBox.Show(this, result.Summary, "Podcast sync complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            DebugLog.Write("Podcast sync", result.Summary);
+            if (showSummary) MessageBox.Show(this, result.Summary, "Podcast sync complete", MessageBoxButton.OK, MessageBoxImage.Information);
         }
-        catch (Exception ex) { MessageBox.Show(this, $"Podcast sync failed and the previous iPod database was restored.\n\n{ex.GetBaseException().Message}", "Podcast sync failed", MessageBoxButton.OK, MessageBoxImage.Error); }
-        finally { isSyncing = false; SyncAllButton.Content = "Sync podcasts"; deviceTimer.Start(); RefreshDevice(); UpdateDeviceStripMode(); }
+        catch (Exception ex) { DebugLog.Write("Podcast sync", "Failed", ex); MessageBox.Show(this, $"Podcast sync failed.\n\n{ex.GetBaseException().Message}", "Podcast sync failed", MessageBoxButton.OK, MessageBoxImage.Error); }
+        finally { isSyncing = false; SyncAllButton.Content = "Sync podcasts"; deviceTimer.Start(); RefreshDevice(); UpdateDeviceStripMode(); UpdateBusyWorkspaces(); }
     }
 }

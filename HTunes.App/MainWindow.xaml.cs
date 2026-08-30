@@ -18,7 +18,6 @@ public partial class MainWindow : Window
 {
     private static readonly string[] AudioExtensions = [".mp3", ".m4a", ".m4b", ".aac", ".wav", ".wma", ".flac", ".ogg", ".aa"];
     private readonly string dataFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "hTunes", "library.json");
-    private readonly string preferencesFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "hTunes", "settings.json");
     private readonly MediaPlayer player = new();
     private readonly DispatcherTimer deviceTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private Point dragStart;
@@ -55,8 +54,9 @@ public partial class MainWindow : Window
             allTracks = data.Tracks.Where(t => File.Exists(t.FilePath)).ToList();
             foreach (var track in allTracks) MediaMetadata.ReadInto(track, onlyMissing: true);
             foreach (var playlist in data.Playlists) Playlists.Add(playlist);
+            DebugLog.Write("Library", $"Loaded tracks={allTracks.Count}; playlists={Playlists.Count}");
         }
-        catch { }
+        catch (Exception ex) { DebugLog.Write("Library", "Could not load saved library", ex); }
     }
 
     private void SaveLibrary()
@@ -67,26 +67,24 @@ public partial class MainWindow : Window
 
     private void LoadPreferences()
     {
-        try
-        {
-            if (!File.Exists(preferencesFile)) return;
-            var preferences = JsonSerializer.Deserialize<AppPreferences>(File.ReadAllText(preferencesFile));
-            if (preferences is not null && TranscodeComboBox.Items.Cast<ComboBoxItem>().Any(item => Same(item.Tag?.ToString() ?? "", preferences.TranscodePresetId)))
-                TranscodeComboBox.SelectedValue = preferences.TranscodePresetId;
-        }
-        catch { }
+        SettingsStore.Initialize();
+        var preferences = SettingsStore.Current;
+        if (TranscodeComboBox.Items.Cast<ComboBoxItem>().Any(item => Same(item.Tag?.ToString() ?? "", preferences.TranscodePresetId)))
+            TranscodeComboBox.SelectedValue = preferences.TranscodePresetId;
     }
 
     private void SavePreferences()
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(preferencesFile)!);
-        var preferences = new AppPreferences { TranscodePresetId = TranscodeComboBox.SelectedValue as string ?? "original" };
-        File.WriteAllText(preferencesFile, JsonSerializer.Serialize(preferences, new JsonSerializerOptions { WriteIndented = true }));
+        var preferences = SettingsStore.Current.Clone();
+        preferences.TranscodePresetId = TranscodeComboBox.SelectedValue as string ?? "original";
+        SettingsStore.Save(preferences);
     }
 
     private void TranscodeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (IsLoaded) SavePreferences();
+        if (!IsLoaded) return;
+        try { SavePreferences(); }
+        catch (Exception ex) { DebugLog.Write("Settings", "Transcode preference save failed", ex); MessageBox.Show(this, ex.Message, "Could not save preference"); }
     }
 
     private void RefreshBrowser()
@@ -224,25 +222,48 @@ public partial class MainWindow : Window
 
     private void ImportPaths(IEnumerable<string> paths)
     {
+        if (isSyncing || isReconcilingPlayCounts || autoSyncRunning) return;
         var before = allTracks.ToList();
         var files = paths.SelectMany(path => Directory.Exists(path) ? EnumerateFilesSafely(path) : [path])
             .Where(path => File.Exists(path) && AudioExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
-            .Distinct(StringComparer.OrdinalIgnoreCase);
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var added = 0;
+        var moves = new List<ImportedFile>();
+        var failures = new List<string>();
+        DebugLog.Write("Import", $"Starting {files.Count} files; mode={SettingsStore.Current.ImportMode}");
         foreach (var file in files)
         {
             var fullPath = Path.GetFullPath(file);
-            if (allTracks.Any(t => Same(t.FilePath, fullPath))) continue;
-            var track = new Track { FilePath = fullPath, Title = Path.GetFileNameWithoutExtension(file), DateAdded = DateTime.Now };
-            MediaMetadata.ReadInto(track);
-            allTracks.Add(track); added++;
+            if (allTracks.Any(t => Same(t.FilePath, fullPath) || Same(t.OriginalImportPath, fullPath))) continue;
+            try
+            {
+                var imported = ImportFileService.Prepare(fullPath, SettingsStore.Current);
+                var track = new Track { FilePath = imported.LibraryPath, OriginalImportPath = fullPath, Title = Path.GetFileNameWithoutExtension(file), DateAdded = DateTime.Now };
+                MediaMetadata.ReadInto(track);
+                allTracks.Add(track); added++;
+                if (imported.DeleteSourceAfterSave) moves.Add(imported);
+            }
+            catch (Exception ex) { DebugLog.Write("Import", $"Failed: {fullPath}", ex); failures.Add($"{Path.GetFileName(file)}: {ex.Message}"); }
         }
         if (added > 0)
         {
             var after = allTracks.ToList();
-            RecordEdit("Import music", () => allTracks = before.ToList(), () => allTracks = after.ToList());
-            SaveLibrary(); RefreshBrowser();
+            try { SaveLibrary(); }
+            catch (Exception ex)
+            {
+                allTracks = before; RefreshBrowser();
+                DebugLog.Write("Import", "Library save failed; original files retained", ex);
+                MessageBox.Show(this, "The library could not be saved. Original files have been kept; any verified copies remain in the destination folder.\n\n" + ex.Message, "Import stopped");
+                return;
+            }
+            foreach (var move in moves)
+                try { ImportFileService.CompleteMove(move); }
+                catch (Exception ex) { DebugLog.Write("Import", "Original retained after copy", ex); failures.Add($"{Path.GetFileName(move.SourcePath)}: copied, but original retained: {ex.Message}"); }
+            RecordEdit("Import music (library entries only)", () => allTracks = before.ToList(), () => allTracks = after.ToList());
+            RefreshBrowser();
         }
+        DebugLog.Write("Import", $"Finished: added={added}, failures={failures.Count}");
+        if (failures.Count > 0) MessageBox.Show(this, $"Added {added} tracks. {failures.Count} issue(s):\n\n" + string.Join("\n", failures.Take(10)), "Import results");
     }
 
     private static IEnumerable<string> EnumerateFilesSafely(string rootDirectory)
@@ -380,6 +401,8 @@ public partial class MainWindow : Window
         if (device is null)
         {
             var wasConnected = currentDevice is not null;
+            if (wasConnected) DebugLog.Write("Device", "iPod disconnected");
+            pendingAutoSyncRoot = null;
             currentDevice = null;
             ipodLoadCancellation?.Cancel();
             ipodTracks = [];
@@ -403,13 +426,18 @@ public partial class MainWindow : Window
         DeviceStatusArea.Cursor = Cursors.Hand;
         IPodTab.Visibility = Visibility.Visible;
         DeviceStrip.Tag = device;
-        if (isNewDevice) _ = InitializeIPodAsync(device);
+        if (isNewDevice) { DebugLog.Write("Device", $"Connected: {device.RootPath}; capacity={device.Capacity}; free={device.FreeSpace}"); _ = InitializeIPodAsync(device); }
+        else TryAutoSync();
     }
 
     private async Task InitializeIPodAsync(IPodDevice device)
     {
         await ReconcilePlayCountsAsync(device);
-        if (currentDevice is not null && Same(currentDevice.RootPath, device.RootPath)) await LoadIPodTracksAsync(device);
+        if (currentDevice is not null && Same(currentDevice.RootPath, device.RootPath))
+        {
+            await LoadIPodTracksAsync(device);
+            if (SettingsStore.Current.AutoSyncOnConnection) pendingAutoSyncRoot = device.RootPath;
+        }
     }
 
     private async Task ReconcilePlayCountsAsync(IPodDevice device, bool duringSync = false)
@@ -418,6 +446,7 @@ public partial class MainWindow : Window
         var sysInfoPath = Path.Combine(device.RootPath, "iPod_Control", "Device", "SysInfoExtended");
         if (!File.Exists(sysInfoPath) || new FileInfo(sysInfoPath).Length == 0) return;
         isReconcilingPlayCounts = true;
+        UpdateBusyWorkspaces();
         SyncAllButton.IsEnabled = EjectButton.IsEnabled = false;
         try
         {
@@ -436,16 +465,17 @@ public partial class MainWindow : Window
                 if (episode is null) continue;
                 if (update.DurationMs > 0) episode.DurationMs = update.DurationMs;
                 episode.PlaybackPositionMs = Math.Max(episode.PlaybackPositionMs, update.PositionMs);
-                if (update.IsPlayed) PodcastService.MarkPlayed(episode);
+                if (update.IsPlayed) PodcastService.MarkPlayed(episode, deleteDownload: !ReferenceEquals(episode, currentPodcastEpisode));
             }
             SaveLibrary(); SavePodcastLibrary(); TracksGrid.Items.Refresh();
             if (isPodcastView) RefreshPodcastShowPanel();
         }
         catch (Exception ex)
         {
+            DebugLog.Write("Listening", "Reconciliation failed", ex);
             DeviceDetailsText.Text = $"  •  Play counts could not be synchronized: {ex.GetBaseException().Message}";
         }
-        finally { isReconcilingPlayCounts = false; RefreshDevice(); }
+        finally { isReconcilingPlayCounts = false; RefreshDevice(); UpdateBusyWorkspaces(); }
     }
 
     private async Task LoadIPodTracksAsync(IPodDevice device)
@@ -556,20 +586,22 @@ public partial class MainWindow : Window
         if (!isSyncing) SyncAllButton.Content = isPodcastView ? "Sync podcasts" : "Sync all";
     }
 
-    private async Task SyncTracksAsync(IEnumerable<Guid> ids, bool randomFill, Playlist? playlist = null)
+    private async Task SyncTracksAsync(IEnumerable<Guid> ids, bool randomFill, Playlist? playlist = null, bool showSummary = true)
     {
         if (isSyncing || isReconcilingPlayCounts || currentDevice is null) return;
         var requestedIds = ids.ToHashSet();
         var requested = allTracks.Where(t => requestedIds.Contains(t.Id)).ToList();
-        if (requested.Count == 0 && playlist is null) { MessageBox.Show(this, "There are no library tracks in this selection.", "Nothing to sync"); return; }
+        if (requested.Count == 0 && playlist is null) { if (showSummary) MessageBox.Show(this, "There are no library tracks in this selection.", "Nothing to sync"); return; }
         var device = currentDevice;
         var preset = TranscodePresets.Get(TranscodeComboBox.SelectedValue as string);
         isSyncing = true; deviceTimer.Stop();
+        UpdateBusyWorkspaces();
         SyncAllButton.IsEnabled = EjectButton.IsEnabled = false;
         TranscodeComboBox.IsEnabled = false;
         SyncAllButton.Content = "Syncing…";
         try
         {
+            DebugLog.Write("Music sync", $"Starting {requested.Count} tracks; randomFill={randomFill}; preset={TranscodeComboBox.SelectedValue}");
             if (!await EnsureIPodPreparedAsync(device)) return;
             var progress = new Progress<SyncProgress>(p => DeviceDetailsText.Text = $"  •  {p.Message}  ({Math.Min(p.Completed + 1, p.Total)}/{p.Total})");
             var result = requested.Count == 0
@@ -586,18 +618,20 @@ public partial class MainWindow : Window
             {
                 await ReconcilePlayCountsAsync(currentDevice, duringSync: true);
                 await LoadIPodTracksAsync(currentDevice);
-                IPodTab.IsChecked = true;
+                if (showSummary) IPodTab.IsChecked = true;
             }
             var summary = playlistResult is null ? result.Summary : $"{result.Summary}\n{playlistResult.Summary}";
-            MessageBox.Show(this, summary, "Sync complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            DebugLog.Write("Music sync", summary);
+            if (showSummary) MessageBox.Show(this, summary, "Sync complete", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
+            DebugLog.Write("Music sync", "Sync failed", ex);
             MessageBox.Show(this, $"The sync was stopped and the previous iPod database was restored.\n\n{ex.GetBaseException().Message}", "Sync failed", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
-            isSyncing = false; TranscodeComboBox.IsEnabled = true; SyncAllButton.Content = "Sync all"; deviceTimer.Start(); RefreshDevice();
+            isSyncing = false; TranscodeComboBox.IsEnabled = true; SyncAllButton.Content = "Sync all"; deviceTimer.Start(); RefreshDevice(); UpdateBusyWorkspaces();
         }
     }
 
@@ -630,12 +664,15 @@ public partial class MainWindow : Window
 
     private void Eject_Click(object sender, RoutedEventArgs e)
     {
-        if (currentDevice is null) return;
+        if (currentDevice is null || isSyncing || isReconcilingPlayCounts || autoSyncRunning) return;
+        pendingAutoSyncRoot = null;
+        DebugLog.Write("Device", $"Eject requested: {currentDevice.RootPath}");
         if (currentPodcastEpisode is not null) FinalizePodcastPlayback();
         else { player.Stop(); player.Close(); }
         EjectButton.IsEnabled = SyncAllButton.IsEnabled = false;
         if (!IPodEjector.TryEject(currentDevice.RootPath, out var error))
         {
+            DebugLog.Write("Device", "Eject failed: " + error);
             EjectButton.IsEnabled = SyncAllButton.IsEnabled = true;
             MessageBox.Show(this, error, "Could not eject iPod", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
@@ -678,7 +715,24 @@ public partial class MainWindow : Window
         new DependencySetupWindow(tools) { Owner = this }.ShowDialog();
     }
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();
-    protected override void OnClosing(System.ComponentModel.CancelEventArgs e) { deviceTimer.Stop(); playCountSyncTimer.Stop(); if (currentPodcastEpisode is not null) FinalizePodcastPlayback(); SavePreferences(); SavePodcastLibrary(); SaveLibrary(); player.Close(); base.OnClosing(e); }
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        if (isSyncing || isReconcilingPlayCounts || activePodcastDownloads > 0 || podcastFeedOperations > 0 || autoSyncRunning || OwnedWindows.Count > 0)
+        {
+            e.Cancel = true;
+            MessageBox.Show(this, "Please finish the current operation and close any hTunes dialogs before exiting.", "hTunes is busy");
+            base.OnClosing(e); return;
+        }
+        try
+        {
+            if (currentPodcastEpisode is not null) FinalizePodcastPlayback();
+            SavePreferences(); SavePodcastLibrary(); SaveLibrary();
+        }
+        catch (Exception ex) { e.Cancel = true; DebugLog.Write("App", "Save before closing failed", ex); MessageBox.Show(this, ex.Message, "Could not save library"); base.OnClosing(e); return; }
+        deviceTimer.Stop(); playCountSyncTimer.Stop(); podcastPlaybackTimer.Stop(); ipodLoadCancellation?.Cancel(); player.Close();
+        DebugLog.Write("App", "Library window closed");
+        base.OnClosing(e);
+    }
 }
 
 public sealed class Track
@@ -688,10 +742,10 @@ public sealed class Track
     public int TrackNumber { get; set; } public int DiscNumber { get; set; } = 1; public int Year { get; set; } public int PlayCount { get; set; }
     public string Format { get; set; } = ""; public int BitrateKbps { get; set; }
     public bool IsPodcast { get; set; }
+    public string OriginalImportPath { get; set; } = "";
     [JsonIgnore] public string BitrateDisplay => BitrateKbps > 0 ? $"{BitrateKbps} kbps" : "—";
     public string? ArtworkPath { get; set; } public DateTime DateAdded { get; set; }
     public Dictionary<string, int> SyncedPlayCounts { get; set; } = [];
 }
 public sealed class Playlist { public Guid Id { get; set; } = Guid.NewGuid(); public string Name { get; set; } = "New Playlist"; public List<Guid> TrackIds { get; set; } = []; }
 public sealed class LibraryData { public List<Track> Tracks { get; set; } = []; public List<Playlist> Playlists { get; set; } = []; }
-public sealed class AppPreferences { public string TranscodePresetId { get; set; } = "original"; }
