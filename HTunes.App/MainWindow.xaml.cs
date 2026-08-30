@@ -26,7 +26,9 @@ public partial class MainWindow : Window
     private bool isIPodView;
     private bool isIPodLoading;
     private bool isSyncing;
+    private bool isReconcilingPlayCounts;
     private CancellationTokenSource? ipodLoadCancellation;
+    private readonly DispatcherTimer playCountSyncTimer = new() { Interval = TimeSpan.FromSeconds(4) };
 
     public ObservableCollection<Track> VisibleTracks { get; } = [];
     public ObservableCollection<Playlist> Playlists { get; } = [];
@@ -36,6 +38,7 @@ public partial class MainWindow : Window
         InitializeComponent(); DataContext = this; LoadLibrary(); RefreshBrowser(); RefreshDevice();
         player.MediaEnded += (_, _) => NextTrack();
         deviceTimer.Tick += (_, _) => RefreshDevice();
+        playCountSyncTimer.Tick += async (_, _) => { playCountSyncTimer.Stop(); if (currentDevice is not null) await ReconcilePlayCountsAsync(currentDevice); };
         deviceTimer.Start();
     }
 
@@ -242,7 +245,7 @@ public partial class MainWindow : Window
 
     private void RefreshDevice()
     {
-        if (isSyncing) return;
+        if (isSyncing || isReconcilingPlayCounts) return;
         var device = IPodDetector.FindConnected();
         if (device is null)
         {
@@ -270,7 +273,39 @@ public partial class MainWindow : Window
         DeviceStatusArea.Cursor = Cursors.Hand;
         IPodTab.Visibility = Visibility.Visible;
         DeviceStrip.Tag = device;
-        if (isNewDevice) _ = LoadIPodTracksAsync(device);
+        if (isNewDevice) _ = InitializeIPodAsync(device);
+    }
+
+    private async Task InitializeIPodAsync(IPodDevice device)
+    {
+        await ReconcilePlayCountsAsync(device);
+        if (currentDevice is not null && Same(currentDevice.RootPath, device.RootPath)) await LoadIPodTracksAsync(device);
+    }
+
+    private async Task ReconcilePlayCountsAsync(IPodDevice device, bool duringSync = false)
+    {
+        if (isReconcilingPlayCounts || (isSyncing && !duringSync)) return;
+        var sysInfoPath = Path.Combine(device.RootPath, "iPod_Control", "Device", "SysInfoExtended");
+        if (!File.Exists(sysInfoPath) || new FileInfo(sysInfoPath).Length == 0) return;
+        isReconcilingPlayCounts = true;
+        SyncAllButton.IsEnabled = EjectButton.IsEnabled = false;
+        try
+        {
+            var updates = await Task.Run(() => IPodPlayCountService.Reconcile(device.RootPath, allTracks));
+            foreach (var update in updates)
+            {
+                var track = allTracks.FirstOrDefault(t => t.Id == update.TrackId);
+                if (track is null) continue;
+                track.PlayCount = update.Count;
+                track.SyncedPlayCounts[update.DeviceId] = update.Count;
+            }
+            SaveLibrary(); TracksGrid.Items.Refresh();
+        }
+        catch (Exception ex)
+        {
+            DeviceDetailsText.Text = $"  •  Play counts could not be synchronized: {ex.GetBaseException().Message}";
+        }
+        finally { isReconcilingPlayCounts = false; RefreshDevice(); }
     }
 
     private async Task LoadIPodTracksAsync(IPodDevice device)
@@ -297,7 +332,16 @@ public partial class MainWindow : Window
                 }
                 return result;
             }, token);
-            if (currentDevice is not null && Same(currentDevice.RootPath, device.RootPath)) ipodTracks = tracks;
+            if (currentDevice is not null && Same(currentDevice.RootPath, device.RootPath))
+            {
+                foreach (var ipodTrack in tracks)
+                {
+                    var local = allTracks.FirstOrDefault(t => TrackIdentity.Key(t.Title, t.Artist, t.Album, t.TrackNumber)
+                        .Equals(TrackIdentity.Key(ipodTrack.Title, ipodTrack.Artist, ipodTrack.Album, ipodTrack.TrackNumber), StringComparison.OrdinalIgnoreCase));
+                    if (local is not null) ipodTrack.PlayCount = local.PlayCount;
+                }
+                ipodTracks = tracks;
+            }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -333,7 +377,7 @@ public partial class MainWindow : Window
 
     private async Task SyncTracksAsync(IEnumerable<Guid> ids, bool randomFill)
     {
-        if (isSyncing || currentDevice is null) return;
+        if (isSyncing || isReconcilingPlayCounts || currentDevice is null) return;
         var requestedIds = ids.ToHashSet();
         var requested = allTracks.Where(t => requestedIds.Contains(t.Id)).ToList();
         if (requested.Count == 0) { MessageBox.Show(this, "There are no library tracks in this selection.", "Nothing to sync"); return; }
@@ -349,6 +393,7 @@ public partial class MainWindow : Window
             currentDevice = IPodDetector.FindConnected();
             if (currentDevice is not null)
             {
+                await ReconcilePlayCountsAsync(currentDevice, duringSync: true);
                 await LoadIPodTracksAsync(currentDevice);
                 IPodTab.IsChecked = true;
             }
@@ -407,8 +452,17 @@ public partial class MainWindow : Window
     private void PlaySelected()
     {
         if (TracksGrid.SelectedItem is not Track track) return;
-        player.Open(new Uri(track.FilePath)); player.Play(); track.PlayCount++;
+        player.Open(new Uri(track.FilePath)); player.Play();
+        var countedTrack = track;
+        if (isIPodView)
+        {
+            countedTrack = allTracks.FirstOrDefault(t => TrackIdentity.Key(t.Title, t.Artist, t.Album, t.TrackNumber)
+                .Equals(TrackIdentity.Key(track.Title, track.Artist, track.Album, track.TrackNumber), StringComparison.OrdinalIgnoreCase)) ?? track;
+        }
+        countedTrack.PlayCount++;
+        track.PlayCount = countedTrack.PlayCount;
         NowPlayingTitle.Text = track.Title; NowPlayingArtist.Text = $"{track.Artist} — {track.Album}"; SaveLibrary(); TracksGrid.Items.Refresh();
+        if (currentDevice is not null && allTracks.Contains(countedTrack)) { playCountSyncTimer.Stop(); playCountSyncTimer.Start(); }
     }
     private void Pause_Click(object sender, RoutedEventArgs e) => player.Pause();
     private void Stop_Click(object sender, RoutedEventArgs e) => player.Stop();
@@ -422,7 +476,7 @@ public partial class MainWindow : Window
     }
     private void About_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this, "hTunes\nA modern Windows music library and iPod companion.", "About hTunes");
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();
-    protected override void OnClosing(System.ComponentModel.CancelEventArgs e) { deviceTimer.Stop(); SaveLibrary(); player.Close(); base.OnClosing(e); }
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e) { deviceTimer.Stop(); playCountSyncTimer.Stop(); SaveLibrary(); player.Close(); base.OnClosing(e); }
 }
 
 public sealed class Track
@@ -431,6 +485,7 @@ public sealed class Track
     public string Artist { get; set; } = "Unknown Artist"; public string Album { get; set; } = "Unknown Album"; public string Genre { get; set; } = "Unknown Genre";
     public int TrackNumber { get; set; } public int DiscNumber { get; set; } = 1; public int Year { get; set; } public int PlayCount { get; set; }
     public string? ArtworkPath { get; set; } public DateTime DateAdded { get; set; }
+    public Dictionary<string, int> SyncedPlayCounts { get; set; } = [];
 }
 public sealed class Playlist { public Guid Id { get; set; } = Guid.NewGuid(); public string Name { get; set; } = "New Playlist"; public List<Guid> TrackIds { get; set; } = []; }
 public sealed class LibraryData { public List<Track> Tracks { get; set; } = []; public List<Playlist> Playlists { get; set; } = []; }

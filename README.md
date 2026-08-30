@@ -14,6 +14,7 @@ A Windows music library and iPod companion built with C# and WPF.
 - Sync selected songs, albums, artists, or genres by dragging them onto the iPod strip
 - Sync the complete compatible library with random space-filling when capacity is limited
 - Back up and transactionally update the stock iPod music database
+- Reconcile play counts in both directions at startup, hot-plug, and during connected playback
 - Safely eject the iPod through Windows
 - Persist the library under the current Windows user's local application data
 

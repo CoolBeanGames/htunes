@@ -26,8 +26,8 @@ internal static class IPodSyncService
         ipod.AssertIsWritable();
 
         var existingKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var track in ipod.Tracks) existingKeys.Add(Key(track.Title, track.Artist, track.Album, track.TrackNumber));
-        var candidates = eligible.Where(t => !existingKeys.Contains(Key(t.Title, t.Artist, t.Album, (uint)Math.Max(0, t.TrackNumber)))).ToList();
+        foreach (var track in ipod.Tracks) existingKeys.Add(TrackIdentity.Key(track.Title, track.Artist, track.Album, checked((int)track.TrackNumber)));
+        var candidates = eligible.Where(t => !existingKeys.Contains(TrackIdentity.Key(t.Title, t.Artist, t.Album, t.TrackNumber))).ToList();
         var alreadyPresent = eligible.Count - candidates.Count;
         if (randomFill) Shuffle(candidates);
 
@@ -128,7 +128,6 @@ internal static class IPodSyncService
         if (parts.Length == 2 && File.Exists(parts[0])) File.Copy(parts[0], parts[1], true);
     }
 
-    private static string Key(string title, string artist, string album, uint trackNumber) => $"{title.Trim()}\u001f{artist.Trim()}\u001f{album.Trim()}\u001f{trackNumber}";
     private static bool Same(string left, string right) => left.Equals(right, StringComparison.OrdinalIgnoreCase);
     private static void Shuffle<T>(IList<T> values)
     {
