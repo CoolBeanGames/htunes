@@ -10,11 +10,12 @@ namespace HTunes.App;
 public partial class MainWindow
 {
     private bool contextActionRunning;
-    private bool ContextActionsAvailable => !contextActionRunning && !isSyncing && !isReconcilingPlayCounts && !autoSyncRunning && activePodcastDownloads == 0 && podcastFeedOperations == 0;
+    private bool ContextActionsAvailable => !isYtDownloading && !contextActionRunning && !isSyncing && !isReconcilingPlayCounts && !autoSyncRunning && activePodcastDownloads == 0 && podcastFeedOperations == 0;
 
     private void UpdateBusyWorkspaces()
     {
         MusicWorkspace.IsEnabled = PodcastWorkspace.IsEnabled = ContextActionsAvailable;
+        UpdateDownloadControls();
     }
 
     private void InitializeContextMenus()

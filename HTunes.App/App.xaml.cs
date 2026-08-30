@@ -100,6 +100,7 @@ public partial class App : Application
         var window = new MainWindow();
         MainWindow = window;
         window.StartupCheckInProgress = true;
+        window.UpdateDownloadControls();
         window.ContentRendered += CheckDependenciesOnFirstRender;
         window.Closed += (_, _) =>
         {
@@ -142,7 +143,7 @@ public partial class App : Application
         {
             DebugLog.Write("Tools", "Startup check failed (opening library anyway)", ex);
         }
-        finally { mainWindow.StartupCheckInProgress = false; }
+        finally { mainWindow.StartupCheckInProgress = false; mainWindow.UpdateDownloadControls(); }
         if (mainWindow.IsVisible && SettingsStore.LoadWarning is { } warning) MessageBox.Show(mainWindow, warning, "Settings recovered");
     }
 }

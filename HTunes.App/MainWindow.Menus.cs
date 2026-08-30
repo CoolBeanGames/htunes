@@ -77,6 +77,13 @@ public partial class MainWindow
         });
         menu.Items.Add(new MenuItem { Header = "New playlist…", Command = ApplicationCommands.New, InputGestureText = "Ctrl+N" });
         AddMenuAction(menu, "Find / subscribe to a podcast…", () => { PodcastsTab.IsChecked = true; FocusSearch(); });
+        AddMenuAction(menu, "Download audio from links…", () => DownloadTab.IsChecked = true);
+        if (isYtDownloading)
+        {
+            var abort = new MenuItem { Header = "Abort downloads" };
+            abort.Click += AbortDownloads_Click;
+            menu.Items.Add(abort);
+        }
         menu.Items.Add(new Separator());
         AddMenuAction(menu, "Sync all music to iPod", () => SyncTracksAsync(allTracks.Select(track => track.Id), true), currentDevice is not null);
         AddMenuAction(menu, "Sync all podcasts to iPod", SyncAllPodcastsAsync, currentDevice is not null);
@@ -96,6 +103,13 @@ public partial class MainWindow
             Command = ApplicationCommands.Redo, InputGestureText = "Ctrl+Y", ToolTip = HistoryScope });
         menu.Items.Add(new MenuItem { Header = "Select all", Command = ApplicationCommands.SelectAll, InputGestureText = "Ctrl+A" });
         menu.Items.Add(new Separator());
+        if (isDownloadView)
+        {
+            menu.Items.Add(new MenuItem { Header = "Cut links", Command = ApplicationCommands.Cut, CommandTarget = DownloadLinksBox });
+            menu.Items.Add(new MenuItem { Header = "Copy links", Command = ApplicationCommands.Copy, CommandTarget = DownloadLinksBox });
+            menu.Items.Add(new MenuItem { Header = "Paste links", Command = ApplicationCommands.Paste, CommandTarget = DownloadLinksBox });
+            return;
+        }
         var source = ActiveActionSource();
         var before = menu.Items.Count;
         if (source == PodcastShowsList) BuildPodcastShowMenu(menu);
@@ -112,13 +126,13 @@ public partial class MainWindow
     {
         menu.Items.Add(new MenuItem { Header = "Back", Command = NavigationCommands.BrowseBack, InputGestureText = "Alt+Left" });
         menu.Items.Add(new Separator());
-        AddMenuAction(menu, "Music", () => MusicTab.IsChecked = true).IsChecked = !isIPodView && !isPodcastView;
+        AddMenuAction(menu, "Music", () => MusicTab.IsChecked = true).IsChecked = !isIPodView && !isPodcastView && !isDownloadView;
         AddMenuAction(menu, "Podcasts", () => PodcastsTab.IsChecked = true).IsChecked = isPodcastView;
         AddMenuAction(menu, "iPod", () => IPodTab.IsChecked = true, currentDevice is not null).IsChecked = isIPodView;
-        menu.Items.Add(new MenuItem { Header = "Download (coming later)", IsEnabled = false });
+        AddMenuAction(menu, "Download", () => DownloadTab.IsChecked = true).IsChecked = isDownloadView;
         menu.Items.Add(new Separator());
         foreach (var (tag, title) in new[] { ("Artist", "Artists"), ("Album", "Albums"), ("Genre", "Genres"), ("Songs", "Songs") })
-            AddMenuAction(menu, title, () => SelectBrowserCategory(tag)).IsChecked = !isPodcastView && category == tag;
+            AddMenuAction(menu, title, () => SelectBrowserCategory(tag)).IsChecked = !isPodcastView && !isDownloadView && category == tag;
         AddMenuAction(menu, "Podcasts on iPod", () => { IPodTab.IsChecked = true; IPodPodcastsCategoryButton.IsChecked = true; }, currentDevice is not null);
         menu.Items.Add(new Separator());
         menu.Items.Add(new MenuItem { Header = "Search this view", Command = ApplicationCommands.Find, InputGestureText = "Ctrl+F" });
@@ -151,7 +165,7 @@ public partial class MainWindow
 
     private void SelectBrowserCategory(string tag)
     {
-        if (isPodcastView) MusicTab.IsChecked = true;
+        if (isPodcastView || isDownloadView) MusicTab.IsChecked = true;
         var panel = (Panel)ArtistCategoryButton.Parent;
         var button = panel.Children.OfType<RadioButton>().First(item => Equals(item.Tag, tag));
         button.IsChecked = true;
@@ -161,6 +175,7 @@ public partial class MainWindow
 
     private void SelectAllActiveItems()
     {
+        if (isDownloadView) { DownloadLinksBox.Focus(); DownloadLinksBox.SelectAll(); return; }
         if (ActiveActionSource() is DataGrid grid) grid.SelectAll();
         else if (ActiveActionSource() is ListBox list && list.SelectionMode != SelectionMode.Single) list.SelectAll();
     }
@@ -168,7 +183,7 @@ public partial class MainWindow
     private void FocusSearch()
     {
         if (isPodcastView) { podcastShowOpen = false; RefreshPodcastShowPanel(); }
-        var box = isPodcastView ? PodcastSearchBox : SearchBox;
+        var box = isDownloadView ? DownloadLinksBox : isPodcastView ? PodcastSearchBox : SearchBox;
         Dispatcher.BeginInvoke(new Action(() => { box.Focus(); box.SelectAll(); }));
     }
 

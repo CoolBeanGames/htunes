@@ -19,7 +19,7 @@ public partial class DependencySetupWindow : Window
         MissingToolsList.ItemsSource = issues.Select(issue => issue.Tool switch
         {
             ExternalTool.FFmpeg => new { Name = ToolName("FFmpeg", issue.Kind), Detail = "Needed for sync-time transcoding and audio conversion." },
-            ExternalTool.YtDlp => new { Name = ToolName("yt-dlp", issue.Kind), Detail = "Needed for the upcoming music-download feature." },
+            ExternalTool.YtDlp => new { Name = ToolName("yt-dlp", issue.Kind), Detail = "Needed to download audio from links in the Download tab." },
             _ => new { Name = issue.Tool.ToString(), Detail = "Needed for an optional hTunes feature." }
         }).ToList();
     }

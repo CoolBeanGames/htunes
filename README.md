@@ -6,6 +6,7 @@ A Windows music library and iPod companion built with C# and WPF.
 
 - Browse by artist, album, genre, or song
 - Single-panel navigation: artists → albums → songs, albums/genres → songs, and podcast shows → episode pages, with Back buttons
+- Download audio from one URL per line with yt-dlp, live progress/output, cancellation, source-ID duplicate skipping, FFmpeg conversion, and automatic library import
 - Show source format and bitrate for library and iPod music
 - Import audio using File → Add files or drag files/folders from Explorer; folder imports include all nested folders
 - Multi-select with Ctrl/Shift and batch-edit metadata and artwork
@@ -67,7 +68,7 @@ Run `dotnet run --project tests/HTunes.ContextMenuChecks` to check list/grid mul
 - **Edit:** Undo/Redo, Select all, and actions for the last selected track/group/playlist/show/episode.
 - **View:** switch tabs and library categories, search, and refresh.
 - **Playback:** play/resume, pause, stop, previous, and next.
-- **Settings:** storage locations, import behavior, iPod automation, future yt-dlp options, podcast defaults/policies, tool updates, and debug logging.
+- **Settings:** storage locations, import behavior, iPod automation, yt-dlp options, podcast defaults/policies, tool updates, and debug logging.
 
 Shortcuts: `Ctrl+Z` Undo, `Ctrl+Y` or `Ctrl+Shift+Z` Redo, `Ctrl+A` Select all, `Ctrl+O` Add files, `Ctrl+N` New playlist, and `Ctrl+F` Search. Text fields retain their native text-editing commands.
 
@@ -89,7 +90,7 @@ Preferences are saved in `%LOCALAPPDATA%\hTunes\settings.json`, with the previou
 
 ### Storage and imports
 
-- Choose separate locations for future Download-tab output, managed music, and podcasts.
+- Choose separate locations for Download-tab output, managed music, and podcasts.
 - **Reference** (default) leaves imported music in place. **Copy** keeps the source and imports a verified copy. **Move** makes and verifies a copy, saves the library entry, then verifies both files again before removing the source. A failed copy/save/verification keeps the original.
 - Existing destination files are never overwritten; filename collisions receive numbered suffixes. Files already inside the managed folder are referenced in place.
 - Changing a location does not relocate old files. Previously downloaded episodes retain their recorded paths. New podcast downloads and artwork use the chosen podcast folder.
@@ -103,7 +104,21 @@ Automatic connection sync runs once after opening/connecting and reconciling lis
 
 ### yt-dlp options
 
-Save audio format, quality/bitrate, embedded metadata/artwork, playlist-name-as-album, whole-playlist behavior, and playlist subfolders. These are **preparatory settings for the upcoming Download tab**, not a working YouTube downloader yet. The argument builder uses individual arguments rather than a shell command. Audio conversion and metadata options follow the [official yt-dlp documentation](https://github.com/yt-dlp/yt-dlp#post-processing-options).
+Save audio format, quality/bitrate, embedded metadata/artwork, playlist-name-as-album, whole-playlist behavior, and playlist subfolders. Each Download queue takes a snapshot of these settings. The argument builder uses individual arguments rather than a shell command. Audio conversion and metadata options follow the [official yt-dlp documentation](https://github.com/yt-dlp/yt-dlp#post-processing-options).
+
+### Download tab
+
+Paste one complete HTTP(S) URL per line and click **Download links**. Blank lines are ignored; each link runs in a separate yt-dlp process, sequentially. A failed link does not stop later links. Playlist handling follows the yt-dlp Settings switch. Progress shows the current title, link index/total, track index/total **within the current link**, byte progress when available, and the number imported across the queue. Track totals remain unknown until yt-dlp discovers them. The console displays live yt-dlp output and hTunes import/error messages, retaining a bounded recent history; debug logging can retain more output if enabled.
+
+hTunes passes its resolved FFmpeg executable directly to yt-dlp. ffprobe must be beside it (the built-in tool installer supplies both). Download conversion uses **Settings → yt-dlp**, not the iPod sync-bar transcode preset. Tool setup is offered if needed. Current YouTube extraction may also need a supported JavaScript runtime: hTunes enables installed Node.js in addition to yt-dlp's default Deno support. See the [official yt-dlp runtime instructions](https://github.com/yt-dlp/yt-dlp/wiki/EJS). hTunes does not automatically install these runtimes or bypass site authentication/access requirements.
+
+After each link exits, only audio reported finished **after conversion and final file movement** is imported. It uses Reference/Copy/Move from Storage settings, reads file metadata/artwork, and saves source identity with the library entry. Copy/Move uses the existing verified-import service; a Move removes the downloaded original only after the library save succeeds. Completed items from a partly failed or aborted playlist are still imported. Failed imports keep files on disk and appear in the console. Audio formats such as Opus/Ogg can be kept in the library even if they require transcoding before iPod sync.
+
+Duplicate skipping uses an archive rebuilt from source IDs whose library files still exist, including copies moved to managed storage. Exact YouTube IDs in the app's `[video-id]` filename convention are also recognized for manually imported files. It does not guess that unrelated recordings with similar titles are duplicates. Removing a library entry or losing its file permits download/import again. Existing finished download files are not overwritten.
+
+**Abort** stops yt-dlp and its child conversion processes, then imports any finished audio. Incomplete downloads/conversions use a private staging directory and are cleaned up after the process exits, so an unfinished MP3 cannot be mistaken for an existing finished download on retry. Retry the links to download unfinished tracks again. Library edits, sync, and tool/settings changes are held while downloading; the console and Abort remain available. Abort and wait for import/cleanup to finish before closing the app.
+
+The default checks cover URL validation, safe argument construction, structured progress parsing, archive identity, library Copy/Move imports and save failures, output draining, and process-tree cancellation. An optional test uses the actual tools against a generated one-second tone on a loopback-only HTTP server: `dotnet run --project tests/HTunes.ContextMenuChecks -- --check-ytdlp-tools "C:\path\to\yt-dlp.exe" "C:\path\to\ffmpeg.exe"`. It verifies valid MP3 conversion, duplicate skipping after Move, and re-downloading when the library file is missing. It uses temporary files, not your music library or iPod.
 
 ### Podcasts
 

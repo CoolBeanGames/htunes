@@ -7,14 +7,15 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HTunes.App;
 
-internal static class Program
+internal static partial class Program
 {
     private static readonly MethodInfo SelectTarget = typeof(MainWindow).GetMethod("SelectContextItem", BindingFlags.NonPublic | BindingFlags.Static)!;
     private static readonly MethodInfo AttachMenu = typeof(MainWindow).GetMethod("AttachItemMenu", BindingFlags.NonPublic | BindingFlags.Static)!;
 
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
+        if (args.FirstOrDefault() == "--yt-test-child") return YtTestChild(args);
         try
         {
             // Exercise controls without constructing MainWindow, opening a window, reading user data,
@@ -29,7 +30,9 @@ internal static class Program
             CheckPodcastPolicies();
             CheckSettingsWindow();
             CheckSinglePanelNavigation();
-            Console.WriteLine("PASS: menus/history, settings, import safety, podcast policies, debug redaction, Settings UI, and single-panel music/podcast navigation.");
+            CheckYtDlp();
+            if (args is ["--check-ytdlp-tools", var yt, var ffmpeg]) CheckLocalYtDlp(yt, ffmpeg);
+            Console.WriteLine("PASS: menus/history, settings, import safety, podcast policies, navigation, yt-dlp arguments/progress/archive, and process cancellation.");
             return 0;
         }
         catch (Exception ex)
@@ -166,7 +169,7 @@ internal static class Program
             Require(SettingsStore.Read(path).PodcastPlayedPercent == 75, "Saving a transcode preference must not erase other settings.");
             Require(legacy.ImportMode == ImportFileMode.Reference && legacy.PodcastDefaultCount == 3, "Editing a clone must not change live preferences before Save.");
             var arguments = YtDlpSettings.BuildArguments(changed).ToList();
-            Require(arguments.Contains("--embed-metadata") && arguments.Contains("playlist_title:%(meta_album)s"), "Playlist album metadata requires metadata embedding.");
+            Require(arguments.Contains("--embed-metadata") && arguments.Contains("%(playlist_title,album|)s:%(meta_album)s"), "Playlist album metadata requires metadata embedding and must preserve album metadata when no playlist exists.");
             Require(arguments[arguments.IndexOf("--paths") + 1] == changed.DownloadDirectory, "A path must be one literal argument, never shell text.");
             Require(arguments.Contains("--no-playlist") && !arguments.Contains("--yes-playlist"), "Playlist download must default off.");
             var invalid = changed.Clone(); invalid.PodcastPlayedPercent = 0;
@@ -383,6 +386,28 @@ internal static class Program
             Call("OpenBrowseItem", shows);
             window.PodcastShows.Remove(show); Call("RefreshPodcastShowPanel");
             Require(Control<Grid>("PodcastHomePanel").Visibility == Visibility.Visible, "Removing the open show must return to the show list.");
+
+            Set("isPodcastView", false); Set("isDownloadView", true);
+            Control<RadioButton>("DownloadTab").IsChecked = true;
+            Control<Grid>("PodcastWorkspace").Visibility = Visibility.Collapsed;
+            Control<Grid>("DownloadWorkspace").Visibility = Visibility.Visible;
+            Control<TextBox>("DownloadLinksBox").Text = "https://example.com/first\nhttps://example.com/second";
+            Control<TextBlock>("DownloadTrackTitle").Text = "Sample track";
+            Control<TextBlock>("DownloadLinkProgress").Text = "Link 1 of 2";
+            Control<TextBlock>("DownloadTrackProgress").Text = "Track 3 of 12 in this link";
+            Control<System.Windows.Controls.ProgressBar>("DownloadProgressBar").Value = 45;
+            Call("AppendDownloadConsole", "[download] Sample output from yt-dlp\n[ExtractAudio] Converting with hTunes FFmpeg");
+            Call("UpdateDeviceStripMode");
+            Call("UpdateDownloadControls");
+            Require(Control<TextBox>("DownloadLinksBox").AcceptsReturn && Control<Button>("DownloadStartButton").IsEnabled, "Download tab must accept multiple links and expose its start button.");
+            Set("isYtDownloading", true); Set("ytDownloadCancellation", new CancellationTokenSource());
+            Call("UpdateBusyWorkspaces");
+            Require(!Control<Button>("DownloadStartButton").IsEnabled && Control<Button>("DownloadAbortButton").IsEnabled && Control<TextBox>("DownloadLinksBox").IsReadOnly, "An active queue must disable restart/editing while keeping Abort available.");
+            Capture("downloads");
+            Call("AbortDownloads_Click", window, new RoutedEventArgs());
+            Require(!Control<Button>("DownloadAbortButton").IsEnabled, "Abort must not remain enabled after cancellation.");
+            ((CancellationTokenSource)typeof(MainWindow).GetField("ytDownloadCancellation", privateInstance)!.GetValue(window)!).Dispose();
+            Set("isYtDownloading", false);
         }
         finally { window.Close(); }
     }

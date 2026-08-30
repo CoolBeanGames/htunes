@@ -116,7 +116,7 @@ internal static class YtDlpSettings
     public static readonly string[] AudioFormats = ["best", "mp3", "m4a", "opus", "flac", "wav"];
     public static readonly string[] AudioQualities = ["0", "128K", "192K", "256K", "320K"];
 
-    // Ready for the Download workflow: pass these through ProcessStartInfo.ArgumentList, never a shell.
+    // Passed through ProcessStartInfo.ArgumentList, never a shell.
     public static IReadOnlyList<string> BuildArguments(AppPreferences settings)
     {
         SettingsStore.Validate(settings);
@@ -126,7 +126,7 @@ internal static class YtDlpSettings
             settings.YtDownloadPlaylist ? "--yes-playlist" : "--no-playlist" };
         if (settings.YtEmbedMetadata || settings.YtPlaylistAsAlbum) args.Add("--embed-metadata");
         if (settings.YtEmbedArtwork) args.Add("--embed-thumbnail");
-        if (settings.YtPlaylistAsAlbum) args.AddRange(["--parse-metadata", "playlist_title:%(meta_album)s"]);
+        if (settings.YtPlaylistAsAlbum) args.AddRange(["--parse-metadata", "%(playlist_title,album|)s:%(meta_album)s"]);
         return args;
     }
 }

@@ -23,7 +23,7 @@ public partial class MainWindow
         PodcastShowsList.PreviewMouseLeftButtonDown += CategoryList_PreviewMouseLeftButtonDown;
         InputBindings.Add(new KeyBinding(NavigationCommands.BrowseBack, new KeyGesture(Key.Left, ModifierKeys.Alt)));
         CommandBindings.Add(new CommandBinding(NavigationCommands.BrowseBack, (_, _) => GoBack(),
-            (_, e) => e.CanExecute = ContextActionsAvailable && (isPodcastView ? podcastShowOpen : musicBrowse.CanGoBack || PlaylistList.SelectedItem is Playlist)));
+            (_, e) => e.CanExecute = !isDownloadView && ContextActionsAvailable && (isPodcastView ? podcastShowOpen : musicBrowse.CanGoBack || PlaylistList.SelectedItem is Playlist)));
     }
 
     // Open on release, not selection-change: Ctrl/Shift, right-click, keyboard selection and drags must stay on the list.

@@ -16,7 +16,7 @@ namespace HTunes.App;
 
 public partial class MainWindow : Window
 {
-    private static readonly string[] AudioExtensions = [".mp3", ".m4a", ".m4b", ".aac", ".wav", ".wma", ".flac", ".ogg", ".aa"];
+    private static readonly string[] AudioExtensions = [".mp3", ".m4a", ".m4b", ".aac", ".wav", ".wma", ".flac", ".ogg", ".oga", ".opus", ".alac", ".aif", ".aiff", ".aa"];
     private readonly string dataFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "hTunes", "library.json");
     private readonly MediaPlayer player = new();
     private readonly DispatcherTimer deviceTimer = new() { Interval = TimeSpan.FromSeconds(2) };
@@ -39,9 +39,10 @@ public partial class MainWindow : Window
     public MainWindow() : this(true) { }
 
     // Isolated UI checks use false: no preferences/library IO, device detection, or background timers.
-    internal MainWindow(bool initializeServices)
+    internal MainWindow(bool initializeServices, string? isolatedLibraryFile = null)
     {
         this.initializeServices = initializeServices;
+        if (!initializeServices && isolatedLibraryFile is not null) dataFile = Path.GetFullPath(isolatedLibraryFile);
         InitializeComponent(); DataContext = this;
         if (initializeServices) { LoadPreferences(); LoadLibrary(); }
         InitializePodcastUi(initializeServices); InitializeContextMenus(); InitializeTopMenus(); InitializeNavigation(); RefreshBrowser();
@@ -198,13 +199,16 @@ public partial class MainWindow : Window
         if (!IsLoaded || sender is not RadioButton button) return;
         var tab = button.Tag?.ToString();
         isPodcastView = tab == "Podcasts";
+        isDownloadView = tab == "Download";
         isIPodView = tab == "IPod";
         IPodPodcastsCategoryButton.Visibility = isIPodView ? Visibility.Visible : Visibility.Collapsed;
         if (!isIPodView && category == "Podcast") ArtistCategoryButton.IsChecked = true;
-        MusicWorkspace.Visibility = isPodcastView ? Visibility.Collapsed : Visibility.Visible;
+        MusicWorkspace.Visibility = isPodcastView || isDownloadView ? Visibility.Collapsed : Visibility.Visible;
         PodcastWorkspace.Visibility = isPodcastView ? Visibility.Visible : Visibility.Collapsed;
+        DownloadWorkspace.Visibility = isDownloadView ? Visibility.Visible : Visibility.Collapsed;
         UpdateDeviceStripMode();
-        if (isPodcastView) _ = EnterPodcastViewAsync(); else ResetMusicNavigation();
+        if (isPodcastView && !isYtDownloading) _ = EnterPodcastViewAsync(); else if (!isDownloadView && !isPodcastView) ResetMusicNavigation();
+        UpdateDownloadControls();
     }
     private void Category_Checked(object sender, RoutedEventArgs e) { if (!IsLoaded || sender is not RadioButton button) return; category = button.Tag?.ToString() ?? "Artist"; ResetMusicNavigation(); }
 
@@ -237,7 +241,7 @@ public partial class MainWindow : Window
 
     private void ImportPaths(IEnumerable<string> paths)
     {
-        if (isSyncing || isReconcilingPlayCounts || autoSyncRunning) return;
+        if (isSyncing || isReconcilingPlayCounts || autoSyncRunning || isYtDownloading) return;
         var before = allTracks.ToList();
         var files = paths.SelectMany(path => Directory.Exists(path) ? EnumerateFilesSafely(path) : [path])
             .Where(path => File.Exists(path) && AudioExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
@@ -419,7 +423,7 @@ public partial class MainWindow : Window
 
     private void RefreshDevice()
     {
-        if (isSyncing || isReconcilingPlayCounts) return;
+        if (isSyncing || isReconcilingPlayCounts || isYtDownloading) return;
         var device = IPodDetector.FindConnected();
         if (device is null)
         {
@@ -465,7 +469,7 @@ public partial class MainWindow : Window
 
     private async Task ReconcilePlayCountsAsync(IPodDevice device, bool duringSync = false)
     {
-        if (isReconcilingPlayCounts || (isSyncing && !duringSync)) return;
+        if (isYtDownloading || isReconcilingPlayCounts || (isSyncing && !duringSync)) return;
         var sysInfoPath = Path.Combine(device.RootPath, "iPod_Control", "Device", "SysInfoExtended");
         if (!File.Exists(sysInfoPath) || new FileInfo(sysInfoPath).Length == 0) return;
         isReconcilingPlayCounts = true;
@@ -605,13 +609,13 @@ public partial class MainWindow : Window
     private void UpdateDeviceStripMode()
     {
         if (TranscodeComboBox is null || SyncAllButton is null) return;
-        TranscodeComboBox.Visibility = isPodcastView ? Visibility.Collapsed : Visibility.Visible;
+        TranscodeComboBox.Visibility = isPodcastView || isDownloadView ? Visibility.Collapsed : Visibility.Visible;
         if (!isSyncing) SyncAllButton.Content = isPodcastView ? "Sync podcasts" : "Sync all";
     }
 
     private async Task SyncTracksAsync(IEnumerable<Guid> ids, bool randomFill, Playlist? playlist = null, bool showSummary = true)
     {
-        if (isSyncing || isReconcilingPlayCounts || currentDevice is null) return;
+        if (isYtDownloading || isSyncing || isReconcilingPlayCounts || currentDevice is null) return;
         var requestedIds = ids.ToHashSet();
         var requested = allTracks.Where(t => requestedIds.Contains(t.Id)).ToList();
         if (requested.Count == 0 && playlist is null) { if (showSummary) MessageBox.Show(this, "There are no library tracks in this selection.", "Nothing to sync"); return; }
@@ -687,7 +691,7 @@ public partial class MainWindow : Window
 
     private void Eject_Click(object sender, RoutedEventArgs e)
     {
-        if (currentDevice is null || isSyncing || isReconcilingPlayCounts || autoSyncRunning) return;
+        if (currentDevice is null || isSyncing || isReconcilingPlayCounts || autoSyncRunning || isYtDownloading) return;
         pendingAutoSyncRoot = null;
         DebugLog.Write("Device", $"Eject requested: {currentDevice.RootPath}");
         if (currentPodcastEpisode is not null) FinalizePodcastPlayback();
@@ -741,7 +745,7 @@ public partial class MainWindow : Window
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         if (!initializeServices) { player.Close(); base.OnClosing(e); return; }
-        if (isSyncing || isReconcilingPlayCounts || activePodcastDownloads > 0 || podcastFeedOperations > 0 || autoSyncRunning || OwnedWindows.Count > 0)
+        if (isYtDownloading || isSyncing || isReconcilingPlayCounts || activePodcastDownloads > 0 || podcastFeedOperations > 0 || autoSyncRunning || OwnedWindows.Count > 0)
         {
             e.Cancel = true;
             MessageBox.Show(this, "Please finish the current operation and close any hTunes dialogs before exiting.", "hTunes is busy");
@@ -767,6 +771,7 @@ public sealed class Track
     public string Format { get; set; } = ""; public int BitrateKbps { get; set; }
     public bool IsPodcast { get; set; }
     public string OriginalImportPath { get; set; } = "";
+    public string DownloadIdentity { get; set; } = "";
     [JsonIgnore] public string BitrateDisplay => BitrateKbps > 0 ? $"{BitrateKbps} kbps" : "—";
     public string? ArtworkPath { get; set; } public DateTime DateAdded { get; set; }
     public Dictionary<string, int> SyncedPlayCounts { get; set; } = [];

@@ -36,7 +36,7 @@ internal sealed class SettingsWindow : Window
 
         var storage = Page("Storage");
         Note(storage, "Locations apply to future downloads and imports. Existing files stay where they are and remain accessible to hTunes.");
-        Folder(storage, "Download location (future Download tab)", draft.DownloadDirectory, value => draft.DownloadDirectory = value);
+        Folder(storage, "Download location", draft.DownloadDirectory, value => draft.DownloadDirectory = value);
         Choice(storage, "When importing music", Enum.GetNames<ImportFileMode>(), draft.ImportMode.ToString(), value => draft.ImportMode = Enum.Parse<ImportFileMode>(value));
         Note(storage, "Reference: leave files in place. Copy: keep originals and add a verified copy. Move: remove originals only after the copy is verified and the library is saved. Name collisions get a new filename. Undo removes library entries only; it does not reverse file copies or moves.");
         Folder(storage, "Managed music location (Copy / Move)", draft.ImportDirectory, value => draft.ImportDirectory = value);
@@ -51,7 +51,7 @@ internal sealed class SettingsWindow : Window
         Note(ipod, "Automatic sync runs once per connection, after listening progress is reconciled. It uses the sync-bar transcode choice and fills available music space with random eligible tracks if necessary. Podcast mirroring follows the Podcasts settings. Changes apply on the next opening/connection.");
 
         var yt = Page("yt-dlp");
-        Note(yt, "These options are saved for the upcoming Download tab. YouTube downloading is not available yet. FFmpeg is required for conversion and embedding artwork.");
+        Note(yt, "Used by the Download tab for each new queue. hTunes uses its FFmpeg and ffprobe for conversion and artwork embedding. Playlist totals are discovered by yt-dlp as each link runs.");
         Choice(yt, "Audio format", YtDlpSettings.AudioFormats, draft.YtAudioFormat, value => draft.YtAudioFormat = value);
         Choice(yt, "Audio quality / target bitrate", YtDlpSettings.AudioQualities, draft.YtAudioQuality, value => draft.YtAudioQuality = value);
         Note(yt, "0 = best variable quality. Bitrates apply to lossy conversions; lossless formats ignore them. Selecting a higher bitrate cannot improve the source recording.");

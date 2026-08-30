@@ -393,7 +393,7 @@ public partial class MainWindow
 
     private async Task SyncPodcastSelectionsAsync(IReadOnlyCollection<PodcastEpisodeSelection> selections, bool mirrorSubscriptions, bool showSummary = true)
     {
-        if (isSyncing || isReconcilingPlayCounts || currentDevice is null) return;
+        if (isYtDownloading || isSyncing || isReconcilingPlayCounts || currentDevice is null) return;
         var device = currentDevice;
         isSyncing = true; deviceTimer.Stop(); SyncAllButton.IsEnabled = EjectButton.IsEnabled = false; SyncAllButton.Content = "Syncing…";
         UpdateBusyWorkspaces();
