@@ -56,6 +56,7 @@ public partial class MainWindow
 
     private ItemsControl ActiveActionSource()
     {
+        if (isTagView) return TagTracksGrid;
         if (isPodcastView)
         {
             if (lastActionSource?.IsVisible == true && (lastActionSource == PodcastShowsList || lastActionSource == PodcastEpisodesGrid || lastActionSource == PodcastSearchResultsList))
@@ -110,6 +111,7 @@ public partial class MainWindow
             menu.Items.Add(new MenuItem { Header = "Paste links", Command = ApplicationCommands.Paste, CommandTarget = DownloadLinksBox });
             return;
         }
+        if (isTagView) { BuildTagMenu(menu); return; }
         var source = ActiveActionSource();
         var before = menu.Items.Count;
         if (source == PodcastShowsList) BuildPodcastShowMenu(menu);
@@ -126,13 +128,14 @@ public partial class MainWindow
     {
         menu.Items.Add(new MenuItem { Header = "Back", Command = NavigationCommands.BrowseBack, InputGestureText = "Alt+Left" });
         menu.Items.Add(new Separator());
-        AddMenuAction(menu, "Music", () => MusicTab.IsChecked = true).IsChecked = !isIPodView && !isPodcastView && !isDownloadView;
+        AddMenuAction(menu, "Music", () => MusicTab.IsChecked = true).IsChecked = !isIPodView && !isPodcastView && !isDownloadView && !isTagView;
         AddMenuAction(menu, "Podcasts", () => PodcastsTab.IsChecked = true).IsChecked = isPodcastView;
         AddMenuAction(menu, "iPod", () => IPodTab.IsChecked = true, currentDevice is not null).IsChecked = isIPodView;
         AddMenuAction(menu, "Download", () => DownloadTab.IsChecked = true).IsChecked = isDownloadView;
+        AddMenuAction(menu, "Tag", () => TagTab.IsChecked = true).IsChecked = isTagView;
         menu.Items.Add(new Separator());
         foreach (var (tag, title) in new[] { ("Artist", "Artists"), ("Album", "Albums"), ("Genre", "Genres"), ("Songs", "Songs") })
-            AddMenuAction(menu, title, () => SelectBrowserCategory(tag)).IsChecked = !isPodcastView && !isDownloadView && category == tag;
+            AddMenuAction(menu, title, () => SelectBrowserCategory(tag)).IsChecked = !isTagView && !isPodcastView && !isDownloadView && category == tag;
         AddMenuAction(menu, "Podcasts on iPod", () => { IPodTab.IsChecked = true; IPodPodcastsCategoryButton.IsChecked = true; }, currentDevice is not null);
         menu.Items.Add(new Separator());
         menu.Items.Add(new MenuItem { Header = "Search this view", Command = ApplicationCommands.Find, InputGestureText = "Ctrl+F" });
@@ -165,7 +168,7 @@ public partial class MainWindow
 
     private void SelectBrowserCategory(string tag)
     {
-        if (isPodcastView || isDownloadView) MusicTab.IsChecked = true;
+        if (isTagView || isPodcastView || isDownloadView) MusicTab.IsChecked = true;
         var panel = (Panel)ArtistCategoryButton.Parent;
         var button = panel.Children.OfType<RadioButton>().First(item => Equals(item.Tag, tag));
         button.IsChecked = true;
@@ -183,7 +186,7 @@ public partial class MainWindow
     private void FocusSearch()
     {
         if (isPodcastView) { podcastShowOpen = false; RefreshPodcastShowPanel(); }
-        var box = isDownloadView ? DownloadLinksBox : isPodcastView ? PodcastSearchBox : SearchBox;
+        var box = isTagView ? TagSearchBox : isDownloadView ? DownloadLinksBox : isPodcastView ? PodcastSearchBox : SearchBox;
         Dispatcher.BeginInvoke(new Action(() => { box.Focus(); box.SelectAll(); }));
     }
 

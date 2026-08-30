@@ -10,12 +10,14 @@ namespace HTunes.App;
 public partial class MainWindow
 {
     private bool contextActionRunning;
-    private bool ContextActionsAvailable => !isYtDownloading && !contextActionRunning && !isSyncing && !isReconcilingPlayCounts && !autoSyncRunning && activePodcastDownloads == 0 && podcastFeedOperations == 0;
+    private bool ContextActionsAvailable => !isTagSaving && !isYtDownloading && !contextActionRunning && !isSyncing && !isReconcilingPlayCounts && !autoSyncRunning && activePodcastDownloads == 0 && podcastFeedOperations == 0;
 
     private void UpdateBusyWorkspaces()
     {
-        MusicWorkspace.IsEnabled = PodcastWorkspace.IsEnabled = ContextActionsAvailable;
+        MusicWorkspace.IsEnabled = PodcastWorkspace.IsEnabled = TagWorkspace.IsEnabled = ContextActionsAvailable;
         UpdateDownloadControls();
+        UpdateTagControls();
+        if (isTagSaving) SyncAllButton.IsEnabled = EjectButton.IsEnabled = false;
     }
 
     private void InitializeContextMenus()
@@ -96,7 +98,7 @@ public partial class MainWindow
             e.Handled = true;
             if (!ContextActionsAvailable) return;
             contextActionRunning = true;
-            MusicWorkspace.IsEnabled = PodcastWorkspace.IsEnabled = false;
+            UpdateBusyWorkspaces();
             try { await action(); }
             catch (Exception ex)
             {

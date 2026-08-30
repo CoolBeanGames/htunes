@@ -23,10 +23,16 @@ public partial class MainWindow
     {
         try
         {
+            // Release any file currently held by playback before an undo that may rewrite its tags.
+            if (player.Source is not null && (redo ? editHistory.RedoDescription : editHistory.UndoDescription) == "Tag selected tracks")
+            {
+                if (currentPodcastEpisode is null) { player.Stop(); player.Close(); }
+            }
             if (redo) editHistory.Redo(); else editHistory.Undo();
             SaveLibrary();
             SavePodcastLibrary();
             var playlist = PlaylistList.SelectedItem as Playlist;
+            if (isTagView) LoadTagInspector();
             RefreshBrowser();
             if (!isIPodView && playlist is not null && Playlists.Contains(playlist)) RefreshPlaylistView(playlist);
             RefreshPodcastShowPanel();

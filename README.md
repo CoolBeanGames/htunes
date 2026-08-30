@@ -5,6 +5,7 @@ A Windows music library and iPod companion built with C# and WPF.
 ## Current library prototype
 
 - Browse by artist, album, genre, or song
+- Global **Tag** tab with a searchable spreadsheet, multi-track inspector, artwork upload/resize/removal, file-tag writing, and undo/redo
 - Single-panel navigation: artists → albums → songs, albums/genres → songs, and podcast shows → episode pages, with Back buttons
 - Download audio from one URL per line with yt-dlp, live progress/output, cancellation, source-ID duplicate skipping, FFmpeg conversion, and automatic library import
 - Show source format and bitrate for library and iPod music
@@ -105,6 +106,20 @@ Automatic connection sync runs once after opening/connecting and reconciling lis
 ### yt-dlp options
 
 Save audio format, quality/bitrate, embedded metadata/artwork, playlist-name-as-album, whole-playlist behavior, and playlist subfolders. Each Download queue takes a snapshot of these settings. The argument builder uses individual arguments rather than a shell command. Audio conversion and metadata options follow the [official yt-dlp documentation](https://github.com/yt-dlp/yt-dlp#post-processing-options).
+
+### Tag tab
+
+[View the Tag editor screenshot (sample library)](docs/screenshots/tag-editor.png).
+
+**Tag** lists every track in the local music library, independent of the artist/album navigation or playlist selection. Missing files stay in the database and are visible here too. The spreadsheet supports Ctrl/Shift selection, Ctrl+A for all filtered rows, column sorting/resizing/reordering, horizontal scrolling, and search across metadata and file paths. Podcast subscriptions/episode records and device-only iPod tracks remain in their respective tabs.
+
+Use the left inspector to edit title, artist, album, genre, track number, disc number, and year. Shared values are displayed; differing values are marked **mixed** (an asterisk on compact numeric fields). Typing automatically checks that field. **Only checked fields are applied**, so an album edit does not overwrite individual song titles. Check a text field and leave it blank to clear it; use 0 to clear a numeric value. Click **Apply to selection** to save. Reset discards the draft; changing the selection or search also resets it. Merely switching away and back retains a draft for an unchanged selection.
+
+**Upload artwork** chooses a local JPG/PNG/BMP, previews its dimensions, and stores a separate managed copy on save; the uploaded image is never overwritten. Remove artwork clears it explicitly. **Resize artwork on save** fits within the requested width/height (16–4096 pixels), preserving aspect ratio without cropping. With no replacement selected, each track's own artwork is resized rather than copying the first track's artwork over all selections.
+
+**Write tags to audio files** is enabled by default. Disable it for library-only edits, including edits to missing or read-only files. Explicit library tags are retained on restart instead of being refilled from stale file tags. Saving physical tags preflights the selection, preserves unchecked tags, keeps a temporary byte-for-byte recovery copy during each file write, and attempts rollback if any write or library save fails. Recovery errors are reported rather than silently ignored. Library JSON is replaced only after a complete temporary file has been written.
+
+Edit → Undo/Redo (Ctrl+Z / Ctrl+Y with the grid focused) restores this session's Tag edits in both the library and audio files when file writing was enabled. It does not rewind play counts. Managed artwork versions are kept for undo; physical file writes temporarily need free space for a copy of the largest edited audio file. Sync/download actions are held while a tag batch is saving. The Tag tab does not edit iPod database records or synchronize changes automatically.
 
 ### Download tab
 
