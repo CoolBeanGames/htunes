@@ -115,9 +115,8 @@ public partial class MainWindow
     private List<Track> ContextCategoryTracks(bool secondary)
     {
         var selected = (secondary ? SecondaryList : PrimaryList).SelectedItems.Cast<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var artists = PrimaryList.SelectedItems.Cast<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
         return SourceTracks.Where(track => (!isIPodView || track.IsPodcast == (category == "Podcast")) &&
-            (secondary ? artists.Contains(track.Artist) && selected.Contains(track.Album) : category switch
+            (secondary ? string.Equals(musicBrowse.Group, track.Artist, StringComparison.OrdinalIgnoreCase) && selected.Contains(track.Album) : category switch
             {
                 "Artist" => selected.Contains(track.Artist),
                 "Album" or "Podcast" => selected.Contains(track.Album),

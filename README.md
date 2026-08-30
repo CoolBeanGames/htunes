@@ -5,6 +5,7 @@ A Windows music library and iPod companion built with C# and WPF.
 ## Current library prototype
 
 - Browse by artist, album, genre, or song
+- Single-panel navigation: artists → albums → songs, albums/genres → songs, and podcast shows → episode pages, with Back buttons
 - Show source format and bitrate for library and iPod music
 - Import audio using File → Add files or drag files/folders from Explorer; folder imports include all nested folders
 - Multi-select with Ctrl/Shift and batch-edit metadata and artwork
@@ -69,6 +70,16 @@ Run `dotnet run --project tests/HTunes.ContextMenuChecks` to check list/grid mul
 - **Settings:** storage locations, import behavior, iPod automation, future yt-dlp options, podcast defaults/policies, tool updates, and debug logging.
 
 Shortcuts: `Ctrl+Z` Undo, `Ctrl+Y` or `Ctrl+Shift+Z` Redo, `Ctrl+A` Select all, `Ctrl+O` Add files, `Ctrl+N` New playlist, and `Ctrl+F` Search. Text fields retain their native text-editing commands.
+
+### Single-panel browsing
+
+Music keeps the category/playlist sidebar, but the working area shows only one page at a time. Click an artist to open their albums, then an album to open its songs. Albums and genres open directly to their song lists; Songs shows the full library. The iPod tab uses the same layout. Back (or `Alt+Left`, also available under View) returns one level and reselects the item you opened. Clicking a sidebar category returns to that category's root.
+
+An ordinary click opens a group on mouse release; `Ctrl`/`Shift` clicks and `Ctrl+A` select groups without navigating, and dragging keeps the current page open. You can also select with the keyboard and press Enter to open a single item. Context menus still act on all selected artists/albums/genres. Search filters the current music page, and refresh keeps the current drill-down. Playlists display their songs full-width in playlist order.
+
+Podcasts starts with a full-width subscribed-show list and search. Click a show (or select it and press Enter) to open its artwork, sync rule, actions, and episodes. Back returns to the show list; right-clicking a show selects it without opening it. Download/playback refreshes keep the show page open. Find/Search returns to the show list so the search box is available.
+
+The automated checks exercise these pages using an isolated MainWindow with services disabled: no real library, preferences, network refresh, device detection, or timers. For optional sample-data layout snapshots, set `HTUNES_UI_CHECK_OUTPUT` to an output directory before running the checks.
 
 History is session-only and does not reverse iPod sync/eject, tool updates, downloads/file deletion, or automatic listening counts/progress. Undoing a podcast unsubscribe or manual played-state change restores its local state, **not deleted downloads or iPod copies**; download/sync again as needed. Metadata edits and their undo affect library metadata only, as before.
 

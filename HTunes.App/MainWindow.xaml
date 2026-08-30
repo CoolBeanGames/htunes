@@ -27,8 +27,9 @@
     <ListBox x:Name="PlaylistList" Grid.Row="4" ItemsSource="{Binding Playlists}" DisplayMemberPath="Name" SelectionChanged="PlaylistList_SelectionChanged" PreviewMouseLeftButtonDown="PlaylistList_PreviewMouseLeftButtonDown" MouseMove="PlaylistList_MouseMove" AllowDrop="True" DragOver="Playlist_DragOver" Drop="Playlist_Drop" BorderThickness="0" Background="Transparent" Padding="5"/>
     <Button x:Name="NewPlaylistButton" Grid.Row="5" Content="＋  New playlist" HorizontalAlignment="Stretch" Click="NewPlaylist_Click"/>
    </Grid></Border>
-   <Grid Grid.Column="1" Margin="18,14,18,12"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-    <Grid Margin="0,0,0,10"><Grid.ColumnDefinitions><ColumnDefinition Width="76"/><ColumnDefinition/><ColumnDefinition Width="260"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+   <Grid Grid.Column="1" Margin="18,14,18,12"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+    <Button x:Name="MusicBackButton" Grid.Row="0" Content="← Back" Click="BrowseBack_Click" Visibility="Collapsed" HorizontalAlignment="Left" Margin="0,0,0,10" ToolTip="Go back (Alt+Left)"/>
+    <Grid Grid.Row="1" Margin="0,0,0,10"><Grid.ColumnDefinitions><ColumnDefinition Width="76"/><ColumnDefinition/><ColumnDefinition Width="260"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
      <Border Width="66" Height="66" HorizontalAlignment="Left" VerticalAlignment="Top" Background="#E6E9EE" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="5" ToolTip="Artwork for the selected album or song">
       <Grid><TextBlock x:Name="AlbumArtworkPlaceholder" Text="♫" FontSize="30" Foreground="#9AA2AF" HorizontalAlignment="Center" VerticalAlignment="Center"/><Image x:Name="AlbumArtworkImage" Stretch="UniformToFill"/></Grid>
      </Border>
@@ -36,32 +37,37 @@
      <TextBox x:Name="SearchBox" Grid.Column="2" Height="32" Margin="0,0,8,0" VerticalAlignment="Top" VerticalContentAlignment="Center" Padding="9,0" TextChanged="SearchBox_TextChanged" ToolTip="Search this view"/>
      <Button x:Name="EditMetadataButton" Grid.Column="3" Content="Edit metadata" Click="EditMetadata_Click" VerticalAlignment="Top"/>
     </Grid>
-    <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition x:Name="PrimaryColumn" Width="240"/><ColumnDefinition x:Name="SecondaryColumn" Width="240"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-     <Border x:Name="PrimaryPanel" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="6" Margin="0,0,10,0"><DockPanel><TextBlock x:Name="PrimaryHeading" DockPanel.Dock="Top" Text="Artists" FontWeight="SemiBold" Padding="12,10" Background="#F7F8FA"/><ListBox x:Name="PrimaryList" SelectionMode="Extended" SelectionChanged="PrimaryList_SelectionChanged" PreviewMouseLeftButtonDown="CategoryList_PreviewMouseLeftButtonDown" MouseMove="PrimaryList_MouseMove" BorderThickness="0" Padding="3"/></DockPanel></Border>
-     <Border x:Name="SecondaryPanel" Grid.Column="1" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="6" Margin="0,0,10,0"><DockPanel><TextBlock x:Name="SecondaryHeading" DockPanel.Dock="Top" Text="Albums" FontWeight="SemiBold" Padding="12,10" Background="#F7F8FA"/><ListBox x:Name="SecondaryList" SelectionMode="Extended" SelectionChanged="SecondaryList_SelectionChanged" PreviewMouseLeftButtonDown="CategoryList_PreviewMouseLeftButtonDown" MouseMove="SecondaryList_MouseMove" BorderThickness="0" Padding="3"/></DockPanel></Border>
-     <Border Grid.Column="2" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="6"><Grid>
+    <Grid Grid.Row="2">
+     <Border x:Name="PrimaryPanel" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="6"><DockPanel><TextBlock x:Name="PrimaryHeading" DockPanel.Dock="Top" Text="Artists" FontWeight="SemiBold" Padding="12,10" Background="#F7F8FA" TextWrapping="Wrap"/><ListBox x:Name="PrimaryList" SelectionMode="Extended" SelectionChanged="PrimaryList_SelectionChanged" PreviewMouseLeftButtonDown="CategoryList_PreviewMouseLeftButtonDown" MouseMove="PrimaryList_MouseMove" BorderThickness="0" Padding="8" FontSize="16"/></DockPanel></Border>
+     <Border x:Name="SecondaryPanel" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="6" Visibility="Collapsed"><DockPanel><TextBlock x:Name="SecondaryHeading" DockPanel.Dock="Top" Text="Albums" FontWeight="SemiBold" Padding="12,10" Background="#F7F8FA"/><ListBox x:Name="SecondaryList" SelectionMode="Extended" SelectionChanged="SecondaryList_SelectionChanged" PreviewMouseLeftButtonDown="CategoryList_PreviewMouseLeftButtonDown" MouseMove="SecondaryList_MouseMove" BorderThickness="0" Padding="8" FontSize="16"/></DockPanel></Border>
+     <Border x:Name="TracksPanel" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="6" Visibility="Collapsed"><Grid>
       <DataGrid x:Name="TracksGrid" ItemsSource="{Binding VisibleTracks}" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Extended" SelectionUnit="FullRow" HeadersVisibility="Column" GridLinesVisibility="Horizontal" BorderThickness="0" Background="White" AlternatingRowBackground="#FAFBFC" SelectionChanged="TracksGrid_SelectionChanged" MouseDoubleClick="TracksGrid_MouseDoubleClick" PreviewMouseLeftButtonDown="TracksGrid_PreviewMouseLeftButtonDown" MouseMove="TracksGrid_MouseMove"><DataGrid.Columns><DataGridTextColumn Header="#" Binding="{Binding TrackNumber}" Width="42"/><DataGridTextColumn Header="Name" Binding="{Binding Title}" Width="2*"/><DataGridTextColumn Header="Artist" Binding="{Binding Artist}" Width="*"/><DataGridTextColumn Header="Album" Binding="{Binding Album}" Width="*"/><DataGridTextColumn Header="Genre" Binding="{Binding Genre}" Width="90"/><DataGridTextColumn Header="Format" Binding="{Binding Format}" Width="70"/><DataGridTextColumn Header="Bitrate" Binding="{Binding BitrateDisplay}" Width="80"/><DataGridTextColumn Header="Plays" Binding="{Binding PlayCount}" Width="55"/></DataGrid.Columns></DataGrid>
       <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"><TextBlock Text="♫" FontSize="46" Foreground="#A8B0BE" HorizontalAlignment="Center"/><TextBlock x:Name="EmptyStateTitle" Text="Drop music here to add it" FontSize="16" FontWeight="SemiBold" Foreground="#596273" HorizontalAlignment="Center"/><TextBlock x:Name="EmptyStateDetail" Text="or choose File → Add files to library" Foreground="#8A92A0" HorizontalAlignment="Center" Margin="0,5"/></StackPanel>
      </Grid></Border>
+     <TextBlock x:Name="BrowseEmptyState" Text="No items found. Drop music here to add it." HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" Foreground="#737B89" Visibility="Collapsed" IsHitTestVisible="False"/>
     </Grid>
    </Grid>
   </Grid>
   <Grid x:Name="PodcastWorkspace" Grid.Row="2" Visibility="Collapsed" Margin="18,14,18,12">
    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-   <Grid Grid.Row="0" Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+   <Button x:Name="PodcastBackButton" Grid.Row="0" Content="← Back to shows" Click="BrowseBack_Click" Visibility="Collapsed" HorizontalAlignment="Left" Margin="0,0,0,12" ToolTip="Go back (Alt+Left)"/>
+   <Grid x:Name="PodcastSearchPanel" Grid.Row="0" Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
     <TextBox x:Name="PodcastSearchBox" Height="34" Padding="10,0" VerticalContentAlignment="Center" ToolTip="Search Apple Podcasts or paste an RSS feed URL" KeyDown="PodcastSearchBox_KeyDown"/>
     <Button Grid.Column="1" x:Name="PodcastSearchButton" Content="Search shows" Click="PodcastSearch_Click" Padding="18,7"/>
    </Grid>
-   <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="310"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-    <Grid Grid.Column="0" Margin="0,0,12,0"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+   <Grid Grid.Row="1">
+    <Grid x:Name="PodcastHomePanel"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
      <TextBlock Text="SUBSCRIBED SHOWS" Foreground="#737B89" FontSize="11" FontWeight="Bold" Margin="8,0,0,7"/>
      <Border Grid.Row="1" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="6">
+      <Grid>
       <ListBox x:Name="PodcastShowsList" SelectionChanged="PodcastShowsList_SelectionChanged" BorderThickness="0" Padding="4"><ListBox.ItemTemplate><DataTemplate><Grid Margin="4,5"><Grid.ColumnDefinitions><ColumnDefinition Width="48"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Width="42" Height="42" Background="#E6E9EE" CornerRadius="4"><Image Source="{Binding ArtworkDisplay}" Stretch="UniformToFill"/></Border><StackPanel Grid.Column="1" Margin="8,1,0,0"><TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding Summary}" Foreground="#737B89" FontSize="11" Margin="0,3,0,0"/></StackPanel></Grid></DataTemplate></ListBox.ItemTemplate></ListBox>
+       <TextBlock x:Name="PodcastHomeEmpty" Text="Search for a show above or paste an RSS feed URL to subscribe." HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="#737B89" IsHitTestVisible="False"/>
+      </Grid>
      </Border>
      <TextBlock x:Name="PodcastSearchResultsHeading" Grid.Row="2" Text="SEARCH RESULTS" Foreground="#737B89" FontSize="11" FontWeight="Bold" Margin="8,12,0,7" Visibility="Collapsed"/>
      <ListBox x:Name="PodcastSearchResultsList" Grid.Row="3" MaxHeight="190" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="1" Visibility="Collapsed"><ListBox.ItemTemplate><DataTemplate><Grid Margin="7"><Grid.ColumnDefinitions><ColumnDefinition Width="42"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Image Width="36" Height="36" Source="{Binding ArtworkUrl}" Stretch="UniformToFill"/><StackPanel Grid.Column="1" Margin="8,0"><TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding Author}" Foreground="#737B89" FontSize="11"/></StackPanel><Button Grid.Column="2" Content="Subscribe" Click="PodcastSubscribe_Click" Padding="9,4"/></Grid></DataTemplate></ListBox.ItemTemplate></ListBox>
     </Grid>
-    <Grid x:Name="PodcastShowPanel" Grid.Column="1"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+    <Grid x:Name="PodcastShowPanel" Visibility="Collapsed"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
      <Grid Margin="0,0,0,10"><Grid.ColumnDefinitions><ColumnDefinition Width="86"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
       <Border Width="76" Height="76" HorizontalAlignment="Left" Background="#E6E9EE" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="6"><Image x:Name="PodcastShowArtwork" Stretch="UniformToFill"/></Border>
       <StackPanel Grid.Column="1" VerticalAlignment="Center"><TextBlock x:Name="PodcastShowTitle" Text="Select a podcast" FontSize="24" FontWeight="SemiBold"/><TextBlock x:Name="PodcastShowSummary" Foreground="#697181" Margin="0,4,0,0"/></StackPanel>
@@ -81,7 +87,7 @@
         <Button Content="Sync" Click="PodcastSyncEpisode_Click" Padding="8,3"/>
        </WrapPanel></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
       </DataGrid.Columns></DataGrid>
-      <StackPanel x:Name="PodcastEmptyState" HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock Text="◉" FontSize="42" Foreground="#A8B0BE" HorizontalAlignment="Center"/><TextBlock Text="Search for a show and subscribe" FontSize="16" FontWeight="SemiBold" Foreground="#596273"/></StackPanel>
+      <StackPanel x:Name="PodcastEmptyState" HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock Text="◉" FontSize="42" Foreground="#A8B0BE" HorizontalAlignment="Center"/><TextBlock Text="No episodes yet — refresh this show to check its feed" FontSize="16" FontWeight="SemiBold" Foreground="#596273"/></StackPanel>
      </Grid></Border>
     </Grid>
    </Grid>

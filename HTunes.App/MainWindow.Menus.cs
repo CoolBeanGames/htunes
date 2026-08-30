@@ -58,13 +58,13 @@ public partial class MainWindow
     {
         if (isPodcastView)
         {
-            if (lastActionSource == PodcastShowsList || lastActionSource == PodcastEpisodesGrid || lastActionSource == PodcastSearchResultsList)
+            if (lastActionSource?.IsVisible == true && (lastActionSource == PodcastShowsList || lastActionSource == PodcastEpisodesGrid || lastActionSource == PodcastSearchResultsList))
                 return lastActionSource;
-            return PodcastEpisodesGrid.SelectedItems.Count > 0 ? PodcastEpisodesGrid : PodcastShowsList;
+            return podcastShowOpen ? PodcastEpisodesGrid : PodcastShowsList;
         }
-        if (lastActionSource == TracksGrid || lastActionSource == PrimaryList || lastActionSource == SecondaryList || (!isIPodView && lastActionSource == PlaylistList))
+        if (lastActionSource?.IsVisible == true && (lastActionSource == TracksGrid || lastActionSource == PrimaryList || lastActionSource == SecondaryList || (!isIPodView && lastActionSource == PlaylistList)))
             return lastActionSource!;
-        return TracksGrid;
+        return PlaylistList.SelectedItem is Playlist ? TracksGrid : musicBrowse.ShowsGroups ? PrimaryList : musicBrowse.ShowsAlbums ? SecondaryList : TracksGrid;
     }
 
     private void BuildFileMenu(ItemsControl menu)
@@ -110,6 +110,8 @@ public partial class MainWindow
 
     private void BuildViewMenu(ItemsControl menu)
     {
+        menu.Items.Add(new MenuItem { Header = "Back", Command = NavigationCommands.BrowseBack, InputGestureText = "Alt+Left" });
+        menu.Items.Add(new Separator());
         AddMenuAction(menu, "Music", () => MusicTab.IsChecked = true).IsChecked = !isIPodView && !isPodcastView;
         AddMenuAction(menu, "Podcasts", () => PodcastsTab.IsChecked = true).IsChecked = isPodcastView;
         AddMenuAction(menu, "iPod", () => IPodTab.IsChecked = true, currentDevice is not null).IsChecked = isIPodView;
@@ -154,7 +156,7 @@ public partial class MainWindow
         var button = panel.Children.OfType<RadioButton>().First(item => Equals(item.Tag, tag));
         button.IsChecked = true;
         // Re-selecting an already checked category should also leave a playlist view.
-        RefreshBrowser();
+        ResetMusicNavigation();
     }
 
     private void SelectAllActiveItems()
@@ -165,6 +167,7 @@ public partial class MainWindow
 
     private void FocusSearch()
     {
+        if (isPodcastView) { podcastShowOpen = false; RefreshPodcastShowPanel(); }
         var box = isPodcastView ? PodcastSearchBox : SearchBox;
         Dispatcher.BeginInvoke(new Action(() => { box.Focus(); box.SelectAll(); }));
     }

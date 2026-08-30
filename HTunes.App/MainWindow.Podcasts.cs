@@ -24,9 +24,9 @@ public partial class MainWindow
     public ObservableCollection<PodcastShow> PodcastShows { get; } = [];
     public ObservableCollection<PodcastSearchResult> PodcastSearchResults { get; } = [];
 
-    private void InitializePodcastUi()
+    private void InitializePodcastUi(bool loadLibrary = true)
     {
-        LoadPodcastLibrary();
+        if (loadLibrary) LoadPodcastLibrary();
         PodcastShowsList.ItemsSource = PodcastShows;
         PodcastSearchResultsList.ItemsSource = PodcastSearchResults;
         podcastPlaybackTimer.Tick += (_, _) => CapturePodcastPlaybackProgress();
@@ -116,7 +116,7 @@ public partial class MainWindow
     private async Task SubscribeAsync(PodcastSearchResult result)
     {
         var existing = PodcastShows.FirstOrDefault(show => Same(show.FeedUrl, result.FeedUrl));
-        if (existing is not null) { PodcastShowsList.SelectedItem = existing; return; }
+        if (existing is not null) { PodcastShowsList.SelectedItem = existing; OpenPodcastShow(); return; }
         var show = new PodcastShow { Title = result.Title, Author = result.Author, FeedUrl = result.FeedUrl, ArtworkUrl = result.ArtworkUrl,
             SyncEpisodeCount = SettingsStore.Current.PodcastDefaultCount, SyncOrder = SettingsStore.Current.PodcastDefaultOrder };
         podcastFeedOperations++; UpdateBusyWorkspaces();
@@ -130,6 +130,7 @@ public partial class MainWindow
             SavePodcastLibrary();
             PodcastShowsList.Items.Refresh();
             PodcastShowsList.SelectedItem = show;
+            OpenPodcastShow();
             await AutoDownloadShowAsync(show);
         }
         catch (Exception ex) { MessageBox.Show(this, $"hTunes could not subscribe to this feed.\n\n{ex.GetBaseException().Message}", "Subscription failed", MessageBoxButton.OK, MessageBoxImage.Warning); }
@@ -140,6 +141,7 @@ public partial class MainWindow
 
     private void RefreshPodcastShowPanel()
     {
+        UpdatePodcastNavigation();
         var show = SelectedPodcastShow;
         PodcastShowTitle.Text = show?.Title ?? "Select a podcast";
         PodcastShowSummary.Text = show is null ? "Search for a show above or paste its RSS feed URL." : $"{show.Author}  •  {show.UnplayedCount} unplayed  •  {show.DownloadedCount} downloaded";

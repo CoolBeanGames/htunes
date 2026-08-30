@@ -3,6 +3,8 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using HTunes.App;
 
 internal static class Program
@@ -26,7 +28,8 @@ internal static class Program
             CheckImportFileSafety();
             CheckPodcastPolicies();
             CheckSettingsWindow();
-            Console.WriteLine("PASS: menus/history, settings persistence and validation, yt-dlp arguments, import copy/move safety, podcast policies, debug redaction, and Settings UI.");
+            CheckSinglePanelNavigation();
+            Console.WriteLine("PASS: menus/history, settings, import safety, podcast policies, debug redaction, Settings UI, and single-panel music/podcast navigation.");
             return 0;
         }
         catch (Exception ex)
@@ -270,6 +273,118 @@ internal static class Program
     {
         try { action(); } catch (Exception) { return; }
         throw new InvalidOperationException(message);
+    }
+
+    private static void CheckSinglePanelNavigation()
+    {
+        var window = new MainWindow(initializeServices: false);
+        const BindingFlags privateInstance = BindingFlags.NonPublic | BindingFlags.Instance;
+        void Set(string field, object value) => typeof(MainWindow).GetField(field, privateInstance)!.SetValue(window, value);
+        object? Call(string name, params object[] args) => typeof(MainWindow).GetMethod(name, privateInstance)!.Invoke(window, args);
+        T Control<T>(string name) where T : FrameworkElement => (T)window.FindName(name);
+        void Capture(string name)
+        {
+            var directory = Environment.GetEnvironmentVariable("HTUNES_UI_CHECK_OUTPUT");
+            if (string.IsNullOrEmpty(directory)) return;
+            Directory.CreateDirectory(directory);
+            var root = (Grid)window.Content;
+            root.Background = window.Background;
+            root.Measure(new Size(1280, 750)); root.Arrange(new Rect(0, 0, 1280, 750)); root.UpdateLayout();
+            window.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+            root.UpdateLayout();
+            var bitmap = new RenderTargetBitmap(1280, 750, 96, 96, PixelFormats.Pbgra32);
+            bitmap.Render(root);
+            var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+            using var output = File.Create(Path.Combine(directory, name + ".png")); encoder.Save(output);
+        }
+        void Page(string name)
+        {
+            foreach (var panel in new[] { "PrimaryPanel", "SecondaryPanel", "TracksPanel" })
+                Require(Control<FrameworkElement>(panel).Visibility == (panel == name ? Visibility.Visible : Visibility.Collapsed), "Exactly one music panel must be visible: " + name);
+        }
+        try
+        {
+            var first = new Track { Title = "First", Artist = "Alpha", Album = "Shared", Genre = "Rock" };
+            var second = new Track { Title = "Second", Artist = "Alpha", Album = "Other", Genre = "Rock" };
+            var third = new Track { Title = "Third", Artist = "Beta", Album = "Shared", Genre = "Jazz" };
+            Set("allTracks", new List<Track> { first, second, third });
+            Call("RefreshBrowser"); Page("PrimaryPanel");
+            Capture("artists");
+            var primary = Control<ListBox>("PrimaryList");
+            var secondary = Control<ListBox>("SecondaryList");
+            primary.SelectedItem = "Alpha";
+            Page("PrimaryPanel"); // Programmatic/right-click/keyboard selection alone must not navigate.
+            primary.SelectedItems.Add("Beta");
+            Require(((List<Track>)Call("ContextCategoryTracks", false)!).Count == 3, "Multiple artists must still resolve to all their tracks.");
+            primary.SelectedItems.Clear(); primary.SelectedItem = "Alpha";
+            Call("OpenBrowseItem", primary); Page("SecondaryPanel");
+            Capture("artist-albums");
+            Require(secondary.Items.Count == 2 && window.VisibleTracks.Count == 0, "Opening an artist must show albums, not songs alongside them.");
+            secondary.SelectedItem = "Shared";
+            Require(((List<Track>)Call("ContextCategoryTracks", true)!).SequenceEqual([first]), "Album actions must stay scoped to the opened artist.");
+            Call("OpenBrowseItem", secondary); Page("TracksPanel");
+            Capture("album-songs");
+            Require(window.VisibleTracks.SequenceEqual([first]), "Artist album drill-down must exclude another artist's same-named album.");
+            Call("RefreshBrowser"); Page("TracksPanel");
+            Require(window.VisibleTracks.SequenceEqual([first]), "Refresh must preserve the current drill-down.");
+            Control<TextBox>("SearchBox").Text = "missing"; Call("RefreshBrowser");
+            Require(window.VisibleTracks.Count == 0, "Search must filter the opened page without escaping to the root.");
+            Control<TextBox>("SearchBox").Text = ""; Call("RefreshBrowser");
+            Call("GoBack"); Page("SecondaryPanel");
+            Require(Equals(secondary.SelectedItem, "Shared"), "Back must preserve the previously opened album selection.");
+            Call("GoBack"); Page("PrimaryPanel");
+            Require(Equals(primary.SelectedItem, "Alpha") && Control<Button>("MusicBackButton").Visibility == Visibility.Collapsed, "Back from artist albums must return to artists without another Back level.");
+            Set("category", "Album"); Call("ResetMusicNavigation");
+            primary.SelectedItem = "Other"; Call("OpenBrowseItem", primary); Page("TracksPanel");
+            Require(window.VisibleTracks.SequenceEqual([second]), "Albums must open directly to songs.");
+            Call("GoBack"); Page("PrimaryPanel");
+            Set("category", "Genre"); Call("ResetMusicNavigation");
+            primary.SelectedItem = "Rock"; Call("OpenBrowseItem", primary); Page("TracksPanel");
+            Require(window.VisibleTracks.Count == 2, "Genres must open their songs in the same single-panel layout.");
+            Set("category", "Songs"); Call("ResetMusicNavigation"); Page("TracksPanel");
+            Require(window.VisibleTracks.Count == 3, "Songs must show the complete library directly.");
+            var playlist = new Playlist { Name = "Favorites", TrackIds = [second.Id, first.Id] };
+            window.Playlists.Add(playlist);
+            Control<ListBox>("PlaylistList").ItemsSource = window.Playlists; // No dispatcher/render loop in this isolated check.
+            Control<ListBox>("PlaylistList").SelectedItem = playlist; Page("TracksPanel");
+            Require(window.VisibleTracks.SequenceEqual([second, first]), "Playlist pages must preserve playlist order.");
+            Call("GoBack"); Page("TracksPanel");
+            Require(Control<ListBox>("PlaylistList").SelectedItem is null && window.VisibleTracks.Count == 3, "Back must leave a playlist for the library root.");
+
+            var deviceEpisode = new Track { Title = "Device episode", Artist = "Host", Album = "Device show", IsPodcast = true };
+            Set("ipodTracks", new List<Track> { first, deviceEpisode }); Set("isIPodView", true);
+            Set("category", "Artist"); Call("ResetMusicNavigation"); Page("PrimaryPanel");
+            Require(primary.Items.Count == 1 && Equals(primary.Items[0], "Alpha"), "iPod music browsing must exclude podcasts.");
+            Set("category", "Podcast"); Call("ResetMusicNavigation");
+            primary.SelectedItem = "Device show"; Call("OpenBrowseItem", primary); Page("TracksPanel");
+            Require(window.VisibleTracks.SequenceEqual([deviceEpisode]), "iPod shows must open just their device episodes without device IO.");
+            Set("isIPodView", false);
+
+            var episode = new PodcastEpisode { Title = "Episode one" };
+            var show = new PodcastShow { Title = "Test show", Episodes = [episode] };
+            window.PodcastShows.Add(show);
+            Set("isPodcastView", true);
+            Control<RadioButton>("PodcastsTab").IsChecked = true;
+            Call("UpdateDeviceStripMode");
+            Control<Grid>("MusicWorkspace").Visibility = Visibility.Collapsed;
+            Control<Grid>("PodcastWorkspace").Visibility = Visibility.Visible;
+            var shows = Control<ListBox>("PodcastShowsList");
+            shows.SelectedItem = show;
+            Capture("podcast-shows");
+            Require(Control<Grid>("PodcastHomePanel").Visibility == Visibility.Visible && Control<Grid>("PodcastShowPanel").Visibility == Visibility.Collapsed, "Selecting a show for a context menu must not open it.");
+            Call("OpenBrowseItem", shows);
+            Capture("podcast-episodes");
+            Require(Control<Grid>("PodcastHomePanel").Visibility == Visibility.Collapsed && Control<Grid>("PodcastShowPanel").Visibility == Visibility.Visible, "Opening a show must replace the home list with its page.");
+            Require(Control<DataGrid>("PodcastEpisodesGrid").Items.Count == 1 && Control<Button>("PodcastBackButton").Visibility == Visibility.Visible, "The show page must contain its episodes and Back button.");
+            Call("RefreshPodcastShowPanel");
+            Require(Control<Grid>("PodcastShowPanel").Visibility == Visibility.Visible, "Playback/download refresh must not leave the show page.");
+            Call("GoBack");
+            Require(Control<Grid>("PodcastHomePanel").Visibility == Visibility.Visible && ReferenceEquals(shows.SelectedItem, show), "Podcast Back must return to shows and preserve selection.");
+            Call("OpenBrowseItem", shows);
+            window.PodcastShows.Remove(show); Call("RefreshPodcastShowPanel");
+            Require(Control<Grid>("PodcastHomePanel").Visibility == Visibility.Visible, "Removing the open show must return to the show list.");
+        }
+        finally { window.Close(); }
     }
 
     private static void InTemporaryDirectory(Action<string> check)

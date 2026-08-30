@@ -29,15 +29,24 @@ public partial class MainWindow : Window
     private bool isIPodLoading;
     private bool isSyncing;
     private bool isReconcilingPlayCounts;
+    private readonly bool initializeServices;
     private CancellationTokenSource? ipodLoadCancellation;
     private readonly DispatcherTimer playCountSyncTimer = new() { Interval = TimeSpan.FromSeconds(4) };
 
     public ObservableCollection<Track> VisibleTracks { get; } = [];
     public ObservableCollection<Playlist> Playlists { get; } = [];
 
-    public MainWindow()
+    public MainWindow() : this(true) { }
+
+    // Isolated UI checks use false: no preferences/library IO, device detection, or background timers.
+    internal MainWindow(bool initializeServices)
     {
-        InitializeComponent(); DataContext = this; LoadPreferences(); LoadLibrary(); InitializePodcastUi(); InitializeContextMenus(); InitializeTopMenus(); RefreshBrowser(); RefreshDevice();
+        this.initializeServices = initializeServices;
+        InitializeComponent(); DataContext = this;
+        if (initializeServices) { LoadPreferences(); LoadLibrary(); }
+        InitializePodcastUi(initializeServices); InitializeContextMenus(); InitializeTopMenus(); InitializeNavigation(); RefreshBrowser();
+        if (!initializeServices) return;
+        RefreshDevice();
         player.MediaEnded += (_, _) => { if (currentPodcastEpisode is not null) PodcastPlaybackEnded(); else NextTrack(); };
         deviceTimer.Tick += (_, _) => RefreshDevice();
         playCountSyncTimer.Tick += async (_, _) => { playCountSyncTimer.Stop(); if (currentDevice is not null) await ReconcilePlayCountsAsync(currentDevice); };
@@ -95,8 +104,8 @@ public partial class MainWindow : Window
             ? viewTracks.Where(track => category == "Podcast" ? track.IsPodcast : !track.IsPodcast)
             : viewTracks;
         var source = categoryTracks.Where(t => MatchesSearch(t, search)).ToList();
-        PlaylistList.SelectedItem = null;
-        PageTitle.Text = category switch { "Artist" => "Artists", "Album" => "Albums", "Genre" => "Genres", "Podcast" => "Podcasts", _ => "Songs" };
+        if (musicBrowse.Category != category) musicBrowse.Reset(category);
+        PageTitle.Text = musicBrowse.Title;
         LibrarySummary.Text = isIPodView
             ? isIPodLoading ? $"Loading content from {currentDevice?.Name ?? "iPod"}…" : category == "Podcast"
                 ? $"{source.Count} podcast episode{(source.Count == 1 ? "" : "s")} on {currentDevice?.Name ?? "iPod"}"
@@ -108,22 +117,41 @@ public partial class MainWindow : Window
         EditMetadataButton.Visibility = isIPodView ? Visibility.Collapsed : Visibility.Visible;
         EmptyStateTitle.Text = isIPodView ? (isIPodLoading ? "Reading iPod content…" : category == "Podcast" ? "No podcasts found on this iPod" : "No music found on this iPod") : "Drop music here to add it";
         EmptyStateDetail.Text = isIPodView ? "Content stored by the stock iPod OS appears here" : "or choose File → Add files to library";
-        PrimaryPanel.Visibility = category == "Songs" ? Visibility.Collapsed : Visibility.Visible;
-        PrimaryColumn.Width = category == "Songs" ? new GridLength(0) : new GridLength(240);
-        SecondaryPanel.Visibility = category == "Artist" ? Visibility.Visible : Visibility.Collapsed;
-        SecondaryColumn.Width = category == "Artist" ? new GridLength(240) : new GridLength(0);
-        PrimaryHeading.Text = PageTitle.Text;
-        PrimaryList.ItemsSource = category switch
+        PrimaryPanel.Visibility = musicBrowse.ShowsGroups ? Visibility.Visible : Visibility.Collapsed;
+        SecondaryPanel.Visibility = musicBrowse.ShowsAlbums ? Visibility.Visible : Visibility.Collapsed;
+        TracksPanel.Visibility = musicBrowse.ShowsTracks ? Visibility.Visible : Visibility.Collapsed;
+        MusicBackButton.Visibility = musicBrowse.CanGoBack ? Visibility.Visible : Visibility.Collapsed;
+        MusicBackButton.Content = musicBrowse.Album is not null ? $"← Back to albums by {musicBrowse.Group}" : $"← Back to {musicBrowse.RootTitle.ToLowerInvariant()}";
+        PrimaryHeading.Text = musicBrowse.RootTitle + " — click to open; Ctrl/Shift-click to select; Enter to open selection";
+        SecondaryHeading.Text = $"Albums by {musicBrowse.Group}";
+        refreshingNavigation = true;
+        ReplaceBrowseItems(PrimaryList, category switch
         {
             "Artist" => source.Select(t => t.Artist).Distinct(StringComparer.OrdinalIgnoreCase).Order().ToList(),
             "Album" => source.Select(t => t.Album).Distinct(StringComparer.OrdinalIgnoreCase).Order().ToList(),
             "Genre" => source.Select(t => t.Genre).Distinct(StringComparer.OrdinalIgnoreCase).Order().ToList(),
             "Podcast" => source.Select(t => t.Album).Distinct(StringComparer.OrdinalIgnoreCase).Order().ToList(),
             _ => null
-        };
-        SecondaryList.ItemsSource = null;
+        });
+        ReplaceBrowseItems(SecondaryList, category == "Artist" && musicBrowse.Group is not null
+            ? source.Where(t => Same(t.Artist, musicBrowse.Group)).Select(t => t.Album).Distinct(StringComparer.OrdinalIgnoreCase).Order() : null);
+        refreshingNavigation = false;
+        BrowseEmptyState.Visibility = (musicBrowse.ShowsGroups && PrimaryList.Items.Count == 0) || (musicBrowse.ShowsAlbums && SecondaryList.Items.Count == 0)
+            ? Visibility.Visible : Visibility.Collapsed;
+        BrowseEmptyState.Text = isIPodView ? (isIPodLoading ? "Reading iPod content…" : "No matching content on this iPod.") : string.IsNullOrEmpty(search) ? "No items found. Drop music here to add it." : "No matching items. Try a different search.";
+        var scoped = musicBrowse.Filter(source).ToList();
+        if (musicBrowse.CanGoBack)
+        {
+            var noun = category == "Podcast" ? "episode" : "song";
+            LibrarySummary.Text = $"{scoped.Count} {noun}{(scoped.Count == 1 ? "" : "s")}" +
+                (musicBrowse.ShowsAlbums ? $"  •  {SecondaryList.Items.Count} albums" : musicBrowse.Album is not null ? $"  •  {musicBrowse.Group}" : "") +
+                (isIPodView ? $"  •  on {currentDevice?.Name ?? "iPod"}" : "");
+        }
         ShowArtwork([]);
-        SetVisibleTracks(category == "Songs" ? source : []);
+        SetVisibleTracks(musicBrowse.ShowsTracks ? scoped : []);
+        if (!musicBrowse.ShowsTracks) ShowArtwork(scoped);
+        if (!isIPodView && PlaylistList.SelectedItem is Playlist)
+            PlaylistList_SelectionChanged(this, new SelectionChangedEventArgs(Selector.SelectionChangedEvent, Array.Empty<object>(), Array.Empty<object>()));
     }
 
     private List<Track> SourceTracks => isIPodView ? ipodTracks : allTracks;
@@ -176,31 +204,18 @@ public partial class MainWindow : Window
         MusicWorkspace.Visibility = isPodcastView ? Visibility.Collapsed : Visibility.Visible;
         PodcastWorkspace.Visibility = isPodcastView ? Visibility.Visible : Visibility.Collapsed;
         UpdateDeviceStripMode();
-        if (isPodcastView) _ = EnterPodcastViewAsync(); else RefreshBrowser();
+        if (isPodcastView) _ = EnterPodcastViewAsync(); else ResetMusicNavigation();
     }
-    private void Category_Checked(object sender, RoutedEventArgs e) { if (!IsLoaded || sender is not RadioButton button) return; category = button.Tag?.ToString() ?? "Artist"; RefreshBrowser(); }
+    private void Category_Checked(object sender, RoutedEventArgs e) { if (!IsLoaded || sender is not RadioButton button) return; category = button.Tag?.ToString() ?? "Artist"; ResetMusicNavigation(); }
 
     private void PrimaryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (PrimaryList.SelectedItem is not string selected) return;
-        var viewTracks = isIPodView
-            ? SourceTracks.Where(track => category == "Podcast" ? track.IsPodcast : !track.IsPodcast).ToList()
-            : SourceTracks;
-        if (category == "Artist")
-        {
-            SecondaryHeading.Text = $"Albums by {selected}";
-            SecondaryList.ItemsSource = viewTracks.Where(t => Same(t.Artist, selected)).Select(t => t.Album).Distinct(StringComparer.OrdinalIgnoreCase).Order().ToList();
-            SetVisibleTracks(viewTracks.Where(t => Same(t.Artist, selected)));
-        }
-        else if (category == "Album") SetVisibleTracks(viewTracks.Where(t => Same(t.Album, selected)));
-        else if (category == "Genre") SetVisibleTracks(viewTracks.Where(t => Same(t.Genre, selected)));
-        else if (category == "Podcast") SetVisibleTracks(viewTracks.Where(t => t.IsPodcast && Same(t.Album, selected)));
+        if (!refreshingNavigation && IsLoaded) ShowArtwork(ContextCategoryTracks(false));
     }
 
     private void SecondaryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (PrimaryList.SelectedItem is string artist && SecondaryList.SelectedItem is string album)
-            SetVisibleTracks(SourceTracks.Where(t => (!isIPodView || !t.IsPodcast) && Same(t.Artist, artist) && Same(t.Album, album)));
+        if (!refreshingNavigation && IsLoaded) ShowArtwork(ContextCategoryTracks(true));
     }
 
     private void TracksGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -301,7 +316,8 @@ public partial class MainWindow : Window
     private void EditMetadata_Click(object sender, RoutedEventArgs e)
     {
         if (isIPodView) return;
-        var selected = SelectedTracks();
+        var selected = musicBrowse.ShowsGroups && PlaylistList.SelectedItem is null ? ContextCategoryTracks(false)
+            : musicBrowse.ShowsAlbums && PlaylistList.SelectedItem is null ? ContextCategoryTracks(true) : SelectedTracks();
         if (selected.Count == 0) { MessageBox.Show(this, "Select one or more songs first. Use Ctrl or Shift to select several.", "Edit metadata"); return; }
         EditTrackMetadata(selected);
     }
@@ -322,8 +338,12 @@ public partial class MainWindow : Window
     {
         if (PlaylistList.SelectedItem is not Playlist playlist) return;
         PageTitle.Text = playlist.Name; LibrarySummary.Text = $"{playlist.TrackIds.Count} song{(playlist.TrackIds.Count == 1 ? "" : "s")}";
-        PrimaryPanel.Visibility = SecondaryPanel.Visibility = Visibility.Collapsed; PrimaryColumn.Width = SecondaryColumn.Width = new GridLength(0);
-        SetVisibleTracks(playlist.TrackIds.Select(id => allTracks.FirstOrDefault(t => t.Id == id)).Where(t => t is not null).Cast<Track>(), preserveOrder: true);
+        PrimaryPanel.Visibility = SecondaryPanel.Visibility = Visibility.Collapsed;
+        BrowseEmptyState.Visibility = Visibility.Collapsed;
+        TracksPanel.Visibility = MusicBackButton.Visibility = Visibility.Visible;
+        MusicBackButton.Content = $"← Back to {musicBrowse.RootTitle.ToLowerInvariant()}";
+        SetVisibleTracks(playlist.TrackIds.Select(id => allTracks.FirstOrDefault(t => t.Id == id)).Where(t => t is not null).Cast<Track>()
+            .Where(t => MatchesSearch(t, SearchBox.Text.Trim())), preserveOrder: true);
     }
 
     private void PlaylistList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e) => dragStart = e.GetPosition(null);
@@ -352,6 +372,8 @@ public partial class MainWindow : Window
     private void CategoryList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         dragStart = e.GetPosition(null);
+        categoryDragPerformed = false;
+        browseClickModified = Keyboard.Modifiers != ModifierKeys.None;
         if (sender is not ListBox list) return;
         var item = ItemsControl.ContainerFromElement(list, e.OriginalSource as DependencyObject) as ListBoxItem;
         if (Keyboard.Modifiers == ModifierKeys.None && item?.IsSelected == true && list.SelectedItems.Count > 1) e.Handled = true;
@@ -369,14 +391,15 @@ public partial class MainWindow : Window
     }
     private void SecondaryList_MouseMove(object sender, MouseEventArgs e)
     {
-        if (isIPodView || category != "Artist" || PrimaryList.SelectedItem is not string artist) return;
+        if (isIPodView || category != "Artist" || musicBrowse.Group is not string artist) return;
         StartCategoryDrag(e, allTracks.Where(t => Same(t.Artist, artist) && SecondaryList.SelectedItems.Cast<string>().Any(v => Same(t.Album, v))));
     }
     private void StartCategoryDrag(MouseEventArgs e, IEnumerable<Track> tracks)
     {
-        if (e.LeftButton != MouseButtonState.Pressed || Math.Abs(e.GetPosition(null).X - dragStart.X) < SystemParameters.MinimumHorizontalDragDistance) return;
+        if (e.LeftButton != MouseButtonState.Pressed || (Math.Abs(e.GetPosition(null).X - dragStart.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(e.GetPosition(null).Y - dragStart.Y) < SystemParameters.MinimumVerticalDragDistance)) return;
         var ids = tracks.Select(t => t.Id).Distinct().ToArray();
-        if (ids.Length > 0) DragDrop.DoDragDrop((DependencyObject)e.Source, new DataObject("hTunesTracks", ids), DragDropEffects.Copy);
+        if (ids.Length > 0) { categoryDragPerformed = true; DragDrop.DoDragDrop((DependencyObject)e.Source, new DataObject("hTunesTracks", ids), DragDropEffects.Copy); }
     }
     private void Playlist_DragOver(object sender, DragEventArgs e) { e.Effects = e.Data.GetDataPresent("hTunesTracks") ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; }
     private void Playlist_Drop(object sender, DragEventArgs e)
@@ -717,6 +740,7 @@ public partial class MainWindow : Window
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
+        if (!initializeServices) { player.Close(); base.OnClosing(e); return; }
         if (isSyncing || isReconcilingPlayCounts || activePodcastDownloads > 0 || podcastFeedOperations > 0 || autoSyncRunning || OwnedWindows.Count > 0)
         {
             e.Cancel = true;
