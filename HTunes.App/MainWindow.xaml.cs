@@ -1,5 +1,6 @@
 using Microsoft.Win32;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
@@ -24,6 +25,7 @@ public partial class MainWindow : Window
     private IPodDevice? currentDevice;
     private bool isIPodView;
     private bool isIPodLoading;
+    private bool isSyncing;
     private CancellationTokenSource? ipodLoadCancellation;
 
     public ObservableCollection<Track> VisibleTracks { get; } = [];
@@ -184,11 +186,46 @@ public partial class MainWindow : Window
         SetVisibleTracks(playlist.TrackIds.Select(id => allTracks.FirstOrDefault(t => t.Id == id)).Where(t => t is not null).Cast<Track>());
     }
 
-    private void TracksGrid_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e) => dragStart = e.GetPosition(null);
+    private void TracksGrid_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        dragStart = e.GetPosition(null);
+        var row = ItemsControl.ContainerFromElement(TracksGrid, e.OriginalSource as DependencyObject) as DataGridRow;
+        if (Keyboard.Modifiers == ModifierKeys.None && row?.IsSelected == true && TracksGrid.SelectedItems.Count > 1) e.Handled = true;
+    }
     private void TracksGrid_MouseMove(object sender, MouseEventArgs e)
     {
         if (e.LeftButton != MouseButtonState.Pressed || Math.Abs(e.GetPosition(null).X - dragStart.X) < SystemParameters.MinimumHorizontalDragDistance) return;
         var tracks = SelectedTracks(); if (tracks.Count > 0) DragDrop.DoDragDrop(TracksGrid, new DataObject("hTunesTracks", tracks.Select(t => t.Id).ToArray()), DragDropEffects.Copy);
+    }
+
+    private void CategoryList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        dragStart = e.GetPosition(null);
+        if (sender is not ListBox list) return;
+        var item = ItemsControl.ContainerFromElement(list, e.OriginalSource as DependencyObject) as ListBoxItem;
+        if (Keyboard.Modifiers == ModifierKeys.None && item?.IsSelected == true && list.SelectedItems.Count > 1) e.Handled = true;
+    }
+    private void PrimaryList_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (isIPodView) return;
+        StartCategoryDrag(e, category switch
+        {
+            "Artist" => allTracks.Where(t => PrimaryList.SelectedItems.Cast<string>().Any(v => Same(t.Artist, v))),
+            "Album" => allTracks.Where(t => PrimaryList.SelectedItems.Cast<string>().Any(v => Same(t.Album, v))),
+            "Genre" => allTracks.Where(t => PrimaryList.SelectedItems.Cast<string>().Any(v => Same(t.Genre, v))),
+            _ => []
+        });
+    }
+    private void SecondaryList_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (isIPodView || category != "Artist" || PrimaryList.SelectedItem is not string artist) return;
+        StartCategoryDrag(e, allTracks.Where(t => Same(t.Artist, artist) && SecondaryList.SelectedItems.Cast<string>().Any(v => Same(t.Album, v))));
+    }
+    private void StartCategoryDrag(MouseEventArgs e, IEnumerable<Track> tracks)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed || Math.Abs(e.GetPosition(null).X - dragStart.X) < SystemParameters.MinimumHorizontalDragDistance) return;
+        var ids = tracks.Select(t => t.Id).Distinct().ToArray();
+        if (ids.Length > 0) DragDrop.DoDragDrop((DependencyObject)e.Source, new DataObject("hTunesTracks", ids), DragDropEffects.Copy);
     }
     private void Playlist_DragOver(object sender, DragEventArgs e) { e.Effects = e.Data.GetDataPresent("hTunesTracks") ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; }
     private void Playlist_Drop(object sender, DragEventArgs e)
@@ -205,6 +242,7 @@ public partial class MainWindow : Window
 
     private void RefreshDevice()
     {
+        if (isSyncing) return;
         var device = IPodDetector.FindConnected();
         if (device is null)
         {
@@ -284,11 +322,68 @@ public partial class MainWindow : Window
         return $"{value:0.#} {units[unit]}";
     }
 
-    private void DeviceStrip_DragOver(object sender, DragEventArgs e) { e.Effects = DeviceStrip.Tag is IPodDevice && e.Data.GetDataPresent("hTunesTracks") ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; }
-    private void DeviceStrip_Drop(object sender, DragEventArgs e)
+    private void DeviceStrip_DragOver(object sender, DragEventArgs e) { e.Effects = DeviceStrip.Tag is IPodDevice && !isSyncing && e.Data.GetDataPresent("hTunesTracks") ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; }
+    private async void DeviceStrip_Drop(object sender, DragEventArgs e)
     {
         if (DeviceStrip.Tag is not IPodDevice || e.Data.GetData("hTunesTracks") is not Guid[] ids) return;
-        MessageBox.Show(this, $"{ids.Length} song{(ids.Length == 1 ? "" : "s")} selected for this iPod. Actual iPod database syncing is the next device step.", "iPod detected");
+        await SyncTracksAsync(ids, randomFill: false);
+    }
+
+    private async void SyncAll_Click(object sender, RoutedEventArgs e) => await SyncTracksAsync(allTracks.Select(t => t.Id), randomFill: true);
+
+    private async Task SyncTracksAsync(IEnumerable<Guid> ids, bool randomFill)
+    {
+        if (isSyncing || currentDevice is null) return;
+        var requestedIds = ids.ToHashSet();
+        var requested = allTracks.Where(t => requestedIds.Contains(t.Id)).ToList();
+        if (requested.Count == 0) { MessageBox.Show(this, "There are no library tracks in this selection.", "Nothing to sync"); return; }
+        var device = currentDevice;
+        isSyncing = true; deviceTimer.Stop();
+        SyncAllButton.IsEnabled = EjectButton.IsEnabled = false;
+        SyncAllButton.Content = "Syncing…";
+        try
+        {
+            if (!await EnsureIPodPreparedAsync(device)) return;
+            var progress = new Progress<SyncProgress>(p => DeviceDetailsText.Text = $"  •  {p.Message}  ({Math.Min(p.Completed + 1, p.Total)}/{p.Total})");
+            var result = await Task.Run(() => IPodSyncService.Sync(device.RootPath, requested, allTracks, randomFill, progress));
+            currentDevice = IPodDetector.FindConnected();
+            if (currentDevice is not null)
+            {
+                await LoadIPodTracksAsync(currentDevice);
+                IPodTab.IsChecked = true;
+            }
+            MessageBox.Show(this, result.Summary, "Sync complete", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"The sync was stopped and the previous iPod database was restored.\n\n{ex.GetBaseException().Message}", "Sync failed", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            isSyncing = false; SyncAllButton.Content = "Sync all"; deviceTimer.Start(); RefreshDevice();
+        }
+    }
+
+    private async Task<bool> EnsureIPodPreparedAsync(IPodDevice device)
+    {
+        var sysInfoPath = Path.Combine(device.RootPath, "iPod_Control", "Device", "SysInfoExtended");
+        if (File.Exists(sysInfoPath) && new FileInfo(sysInfoPath).Length > 0) return true;
+        var executable = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executable)) throw new InvalidOperationException("hTunes could not locate its device setup helper.");
+        var start = new ProcessStartInfo(executable) { UseShellExecute = true, Verb = "runas" };
+        start.ArgumentList.Add("--prepare-ipod"); start.ArgumentList.Add(device.RootPath);
+        try
+        {
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("The iPod setup helper could not be started.");
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0 || !File.Exists(sysInfoPath) || new FileInfo(sysInfoPath).Length == 0) throw new InvalidOperationException("The iPod setup step did not complete.");
+            return true;
+        }
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            MessageBox.Show(this, "Syncing was cancelled because the one-time administrator permission was declined.", "Sync cancelled");
+            return false;
+        }
     }
 
     private void DeviceStatusArea_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
