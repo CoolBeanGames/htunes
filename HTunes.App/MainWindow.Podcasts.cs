@@ -118,7 +118,9 @@ public partial class MainWindow
         {
             PodcastSearchButton.IsEnabled = false;
             await PodcastService.RefreshShowAsync(show);
+            var index = PodcastShows.Count;
             PodcastShows.Add(show);
+            RecordEdit("Subscribe to podcast", () => DetachPodcastShow(show), () => PodcastShows.Insert(Math.Min(index, PodcastShows.Count), show));
             SavePodcastLibrary();
             PodcastShowsList.Items.Refresh();
             PodcastShowsList.SelectedItem = show;
@@ -177,8 +179,14 @@ public partial class MainWindow
             MessageBox.Show(this, "Enter an episode count between 0 and 999.", "Invalid episode count");
             return;
         }
+        var previousCount = show.SyncEpisodeCount;
+        var previousOrder = show.SyncOrder;
+        var order = (PodcastSyncOrderCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Newest";
         show.SyncEpisodeCount = count;
-        show.SyncOrder = (PodcastSyncOrderCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Newest";
+        show.SyncOrder = order;
+        if (previousCount != count || previousOrder != order)
+            RecordEdit("Change podcast sync rule", () => { show.SyncEpisodeCount = previousCount; show.SyncOrder = previousOrder; },
+                () => { show.SyncEpisodeCount = count; show.SyncOrder = order; });
         SavePodcastLibrary();
         RefreshPodcastShowPanel();
     }
@@ -186,8 +194,7 @@ public partial class MainWindow
     private void PodcastMarkAllPlayed_Click(object sender, RoutedEventArgs e)
     {
         if (SelectedPodcastShow is not { } show) return;
-        foreach (var episode in show.Episodes) { PreparePodcastFileDeletion(episode); PodcastService.MarkPlayed(episode); }
-        SavePodcastLibrary(); RefreshPodcastShowPanel(); ScheduleConnectedPodcastCleanup();
+        SetEpisodesPlayed(show.Episodes.ToList(), true);
     }
 
     private void PodcastDeleteDownloads_Click(object sender, RoutedEventArgs e)
@@ -201,7 +208,10 @@ public partial class MainWindow
     {
         if (SelectedPodcastShow is not { } show || MessageBox.Show(this, $"Unsubscribe from {show.Title}? Downloaded episodes will be deleted.", "Unsubscribe", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         foreach (var episode in show.Episodes) { PreparePodcastFileDeletion(episode); PodcastService.DeleteDownload(episode); }
-        PodcastShows.Remove(show); SavePodcastLibrary(); RefreshPodcastShowPanel();
+        var index = PodcastShows.IndexOf(show);
+        PodcastShows.Remove(show);
+        RecordEdit("Unsubscribe (subscription only)", () => PodcastShows.Insert(Math.Min(index, PodcastShows.Count), show), () => DetachPodcastShow(show));
+        SavePodcastLibrary(); RefreshPodcastShowPanel();
     }
 
     private async void PodcastDownloadEpisode_Click(object sender, RoutedEventArgs e)
@@ -228,12 +238,12 @@ public partial class MainWindow
 
     private void PodcastMarkEpisodePlayed_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is Button { DataContext: PodcastEpisode episode }) { PreparePodcastFileDeletion(episode); PodcastService.MarkPlayed(episode); SavePodcastLibrary(); RefreshPodcastShowPanel(); ScheduleConnectedPodcastCleanup(); }
+        if (sender is Button { DataContext: PodcastEpisode episode }) SetEpisodesPlayed([episode], true);
     }
 
     private void PodcastMarkEpisodeUnplayed_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is Button { DataContext: PodcastEpisode episode }) { PodcastService.MarkUnplayed(episode); SavePodcastLibrary(); RefreshPodcastShowPanel(); }
+        if (sender is Button { DataContext: PodcastEpisode episode }) SetEpisodesPlayed([episode], false);
     }
 
     private async void PodcastPlayEpisode_Click(object sender, RoutedEventArgs e)

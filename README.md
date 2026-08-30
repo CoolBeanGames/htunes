@@ -25,6 +25,8 @@ A Windows music library and iPod companion built with C# and WPF.
 - Remember the selected transcoding preset between launches
 - Right-click songs, artists, albums, genres, playlists, podcast shows/episodes, search results, or the iPod strip for relevant actions
 - Context menus preserve Ctrl/Shift selections and support playing, syncing, metadata/artwork editing, playlist membership, download management, and removal
+- File/Edit/View/Playback menus expose the same actions, with working tab/category navigation and a Settings placeholder
+- Undo/Redo supports up to 100 local edits per session: imports, metadata/artwork, library removal, playlist edits, subscriptions, sync rules, and manually changed podcast played state
 - Search Apple Podcasts or subscribe directly with an RSS feed URL
 - Browse subscribed shows and episode artwork, numbers, dates, played state, and download state
 - Download, play, delete, and mark individual podcast episodes played or unplayed
@@ -54,6 +56,18 @@ Selecting **Do not transcode (original)** does not require FFmpeg.
 
 ## Context-menu checks
 
-Run `dotnet run --project tests/HTunes.ContextMenuChecks` to check list/grid multi-selection and context-menu selection behavior. These checks do not launch hTunes, load your library, or access an iPod.
+Run `dotnet run --project tests/HTunes.ContextMenuChecks` to check list/grid multi-selection, top-menu rebuilding, undo/redo branching and limits, failure handling, and preservation of play counts during metadata undo. These checks do not launch hTunes, load your library, or access an iPod.
 
 **Remove from library** leaves original audio files on disk. **Remove from this playlist** only changes playlist membership; **Delete playlist** leaves its tracks in the library. Podcast **Delete downloaded files** removes local downloads but retains episode entries and played state.
+
+## Menus and undo/redo
+
+- **File:** add files/folders, create playlists, find/subscribe to shows, sync music/podcasts, eject, update tools, and exit.
+- **Edit:** Undo/Redo, Select all, and actions for the last selected track/group/playlist/show/episode.
+- **View:** switch tabs and library categories, search, and refresh.
+- **Playback:** play/resume, pause, stop, previous, and next.
+- **Settings:** opens a placeholder window for the next feature step; no new preferences are present yet.
+
+Shortcuts: `Ctrl+Z` Undo, `Ctrl+Y` or `Ctrl+Shift+Z` Redo, `Ctrl+A` Select all, `Ctrl+O` Add files, `Ctrl+N` New playlist, and `Ctrl+F` Search. Text fields retain their native text-editing commands.
+
+History is session-only and does not reverse iPod sync/eject, tool updates, downloads/file deletion, or automatic listening counts/progress. Undoing a podcast unsubscribe or manual played-state change restores its local state, **not deleted downloads or iPod copies**; download/sync again as needed. Metadata edits and their undo affect library metadata only, as before.

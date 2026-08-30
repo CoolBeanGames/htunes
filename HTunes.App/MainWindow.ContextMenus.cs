@@ -120,7 +120,7 @@ public partial class MainWindow
             })).ToList();
     }
 
-    private void BuildTrackMenu(ContextMenu menu, List<Track> tracks)
+    private void BuildTrackMenu(ItemsControl menu, List<Track> tracks)
     {
         if (tracks.Count == 0) return;
         var playlist = !isIPodView ? PlaylistList.SelectedItem as Playlist : null;
@@ -133,26 +133,23 @@ public partial class MainWindow
         if (!isIPodView)
         {
             AddMenuAction(menu, "Sync selected to iPod", () => SyncTracksAsync(tracks.Select(track => track.Id), false), currentDevice is not null);
-            AddMenuAction(menu, "Edit metadata / artwork…", () =>
-            {
-                if (new MetadataEditorWindow(tracks) { Owner = this }.ShowDialog() == true) { SaveLibrary(); RefreshBrowser(); }
-            });
+            AddMenuAction(menu, "Edit metadata / artwork…", () => EditTrackMetadata(tracks));
             var addTo = new MenuItem { Header = "Add to playlist", IsEnabled = ContextActionsAvailable };
             menu.Items.Add(addTo);
             AddMenuAction(addTo, "New playlist…", () =>
             {
                 var name = AskPlaylistName("New playlist", "New Playlist");
                 if (name is null) return;
-                var created = new Playlist { Name = name, TrackIds = tracks.Select(track => track.Id).Distinct().ToList() };
-                Playlists.Add(created);
-                SaveLibrary();
-                PlaylistList.SelectedItem = created;
+                CreateLocalPlaylist(name, tracks.Select(track => track.Id));
             });
             foreach (var target in Playlists.ToList())
                 AddMenuAction(addTo, target.Name, () =>
                 {
-                    foreach (var track in tracks)
-                        if (!target.TrackIds.Contains(track.Id)) target.TrackIds.Add(track.Id);
+                    ChangePlaylistMembership(target, () =>
+                    {
+                        foreach (var track in tracks)
+                            if (!target.TrackIds.Contains(track.Id)) target.TrackIds.Add(track.Id);
+                    });
                     SaveLibrary();
                     RefreshPlaylistView(target);
                 }, tracks.Any(track => !target.TrackIds.Contains(track.Id)));
@@ -161,7 +158,7 @@ public partial class MainWindow
                 AddMenuAction(menu, "Remove from this playlist", () =>
                 {
                     var ids = tracks.Select(track => track.Id).ToHashSet();
-                    playlist.TrackIds.RemoveAll(ids.Contains);
+                    ChangePlaylistMembership(playlist, () => playlist.TrackIds.RemoveAll(ids.Contains));
                     SaveLibrary();
                     RefreshPlaylistView(playlist);
                 });
@@ -184,13 +181,26 @@ public partial class MainWindow
         if (MessageBox.Show(this, $"Remove {tracks.Count} selected track(s) from the library and all playlists?\n\nThe original files will NOT be deleted.",
             "Remove from library", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         var ids = tracks.Select(track => track.Id).ToHashSet();
+        var before = allTracks.ToList();
+        var membershipsBefore = Playlists.ToDictionary(playlist => playlist, playlist => playlist.TrackIds.ToList());
         allTracks.RemoveAll(track => ids.Contains(track.Id));
         foreach (var playlist in Playlists) playlist.TrackIds.RemoveAll(ids.Contains);
+        var after = allTracks.ToList();
+        var membershipsAfter = Playlists.ToDictionary(playlist => playlist, playlist => playlist.TrackIds.ToList());
+        RecordEdit("Remove from library", () =>
+        {
+            allTracks = before.ToList();
+            foreach (var (playlist, members) in membershipsBefore) playlist.TrackIds = members.ToList();
+        }, () =>
+        {
+            allTracks = after.ToList();
+            foreach (var (playlist, members) in membershipsAfter) playlist.TrackIds = members.ToList();
+        });
         SaveLibrary();
         RefreshBrowser();
     }
 
-    private void BuildPlaylistMenu(ContextMenu menu)
+    private void BuildPlaylistMenu(ItemsControl menu)
     {
         if (isIPodView) return;
         if (PlaylistList.SelectedItem is Playlist playlist)
@@ -202,7 +212,9 @@ public partial class MainWindow
             {
                 var name = AskPlaylistName("Rename playlist", playlist.Name);
                 if (name is null) return;
+                var before = playlist.Name;
                 playlist.Name = name;
+                if (before != name) RecordEdit("Rename playlist", () => playlist.Name = before, () => playlist.Name = name);
                 SaveLibrary();
                 RefreshPlaylistView(playlist);
             });
@@ -210,7 +222,9 @@ public partial class MainWindow
             {
                 if (MessageBox.Show(this, $"Delete the playlist ‘{playlist.Name}’?\n\nIts tracks will remain in your library.", "Delete playlist",
                     MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+                var index = Playlists.IndexOf(playlist);
                 Playlists.Remove(playlist);
+                RecordEdit("Delete playlist", () => Playlists.Insert(Math.Min(index, Playlists.Count), playlist), () => Playlists.Remove(playlist));
                 SaveLibrary();
                 RefreshBrowser();
             });
@@ -220,10 +234,7 @@ public partial class MainWindow
         {
             var name = AskPlaylistName("New playlist", "New Playlist");
             if (name is null) return;
-            var created = new Playlist { Name = name };
-            Playlists.Add(created);
-            SaveLibrary();
-            PlaylistList.SelectedItem = created;
+            CreateLocalPlaylist(name);
         });
     }
 
@@ -250,7 +261,7 @@ public partial class MainWindow
         return dialog.ShowDialog() == true ? input.Text.Trim() : null;
     }
 
-    private void BuildPodcastShowMenu(ContextMenu menu)
+    private void BuildPodcastShowMenu(ItemsControl menu)
     {
         if (SelectedPodcastShow is not { } show) return;
         AddMenuAction(menu, "Refresh episodes", () => RefreshShowsAsync([show]));
@@ -278,7 +289,7 @@ public partial class MainWindow
         AddMenuAction(menu, "Unsubscribe…", () => PodcastUnsubscribe_Click(this, new RoutedEventArgs()));
     }
 
-    private void BuildEpisodeMenu(ContextMenu menu)
+    private void BuildEpisodeMenu(ItemsControl menu)
     {
         if (SelectedPodcastShow is not { } show) return;
         var episodes = PodcastEpisodesGrid.SelectedItems.OfType<PodcastEpisode>().ToList();
@@ -305,12 +316,14 @@ public partial class MainWindow
 
     private void SetEpisodesPlayed(List<PodcastEpisode> episodes, bool played)
     {
+        var before = episodes.ToDictionary(episode => episode, EpisodeState.Read);
         foreach (var episode in episodes)
         {
             PreparePodcastFileDeletion(episode);
             if (played) PodcastService.MarkPlayed(episode);
             else PodcastService.MarkUnplayed(episode);
         }
+        RecordEpisodeChanges(episodes, before, played);
         SavePodcastLibrary();
         RefreshPodcastShowPanel();
         if (played) ScheduleConnectedPodcastCleanup();

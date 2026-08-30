@@ -38,7 +38,7 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
-        InitializeComponent(); DataContext = this; LoadPreferences(); LoadLibrary(); InitializePodcastUi(); InitializeContextMenus(); RefreshBrowser(); RefreshDevice();
+        InitializeComponent(); DataContext = this; LoadPreferences(); LoadLibrary(); InitializePodcastUi(); InitializeContextMenus(); InitializeTopMenus(); RefreshBrowser(); RefreshDevice();
         player.MediaEnded += (_, _) => { if (currentPodcastEpisode is not null) PodcastPlaybackEnded(); else NextTrack(); };
         deviceTimer.Tick += (_, _) => RefreshDevice();
         playCountSyncTimer.Tick += async (_, _) => { playCountSyncTimer.Stop(); if (currentDevice is not null) await ReconcilePlayCountsAsync(currentDevice); };
@@ -224,6 +224,7 @@ public partial class MainWindow : Window
 
     private void ImportPaths(IEnumerable<string> paths)
     {
+        var before = allTracks.ToList();
         var files = paths.SelectMany(path => Directory.Exists(path) ? EnumerateFilesSafely(path) : [path])
             .Where(path => File.Exists(path) && AudioExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase);
@@ -236,7 +237,12 @@ public partial class MainWindow : Window
             MediaMetadata.ReadInto(track);
             allTracks.Add(track); added++;
         }
-        if (added > 0) { SaveLibrary(); RefreshBrowser(); }
+        if (added > 0)
+        {
+            var after = allTracks.ToList();
+            RecordEdit("Import music", () => allTracks = before.ToList(), () => allTracks = after.ToList());
+            SaveLibrary(); RefreshBrowser();
+        }
     }
 
     private static IEnumerable<string> EnumerateFilesSafely(string rootDirectory)
@@ -276,7 +282,7 @@ public partial class MainWindow : Window
         if (isIPodView) return;
         var selected = SelectedTracks();
         if (selected.Count == 0) { MessageBox.Show(this, "Select one or more songs first. Use Ctrl or Shift to select several.", "Edit metadata"); return; }
-        if (new MetadataEditorWindow(selected) { Owner = this }.ShowDialog() == true) { SaveLibrary(); RefreshBrowser(); }
+        EditTrackMetadata(selected);
     }
 
     private void RemoveTracks_Click(object sender, RoutedEventArgs e)
@@ -288,7 +294,7 @@ public partial class MainWindow : Window
 
     private void NewPlaylist_Click(object sender, RoutedEventArgs e)
     {
-        var playlist = new Playlist { Name = $"New Playlist {Playlists.Count + 1}" }; Playlists.Add(playlist); SaveLibrary(); PlaylistList.SelectedItem = playlist;
+        CreateLocalPlaylist($"New Playlist {Playlists.Count + 1}");
     }
 
     private void PlaylistList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -357,7 +363,10 @@ public partial class MainWindow : Window
         var container = ItemsControl.ContainerFromElement(PlaylistList, e.OriginalSource as DependencyObject) as ListBoxItem;
         var playlist = container?.DataContext as Playlist ?? PlaylistList.SelectedItem as Playlist;
         if (playlist is null || e.Data.GetData("hTunesTracks") is not Guid[] ids) return;
-        foreach (var id in ids.Where(id => !playlist.TrackIds.Contains(id))) playlist.TrackIds.Add(id);
+        ChangePlaylistMembership(playlist, () =>
+        {
+            foreach (var id in ids.Where(id => !playlist.TrackIds.Contains(id))) playlist.TrackIds.Add(id);
+        });
         SaveLibrary(); PlaylistList.Items.Refresh(); PlaylistList.SelectedItem = playlist;
         PlaylistList_SelectionChanged(this, new SelectionChangedEventArgs(Selector.SelectionChangedEvent, new List<object>(), new List<object>()));
     }

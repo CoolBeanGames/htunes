@@ -17,7 +17,10 @@ internal static class Program
             // or connecting to an iPod. This exercises the actual selection helper used by every menu.
             CheckListSelection();
             CheckGridSelection();
-            Console.WriteLine("PASS: list/grid multi-selection, target replacement, empty-space clearing, and menu attachment.");
+            CheckHistory();
+            CheckMetadataHistoryIsolation();
+            CheckTopMenuRebuild();
+            Console.WriteLine("PASS: menu selection, top-menu refresh, undo/redo, history limits, failure handling, and play-count isolation.");
             return 0;
         }
         catch (Exception ex)
@@ -61,6 +64,65 @@ internal static class Program
     }
 
     private static void Select(ItemsControl control, object? target) => SelectTarget.Invoke(null, [control, target]);
+
+    private static void CheckHistory()
+    {
+        var history = new EditHistory(2);
+        var value = 1;
+        history.Record("first", () => value = 0, () => value = 1);
+        Require(history.CanUndo && !history.CanRedo && history.UndoDescription == "first", "Record must expose an undo description.");
+        history.Undo();
+        Require(value == 0 && history.CanRedo && !history.CanUndo, "Undo must move the edit to redo.");
+        history.Redo();
+        Require(value == 1 && history.CanUndo && !history.CanRedo, "Redo must replay the edit.");
+        value = 2;
+        history.Record("second", () => value = 1, () => value = 2);
+        value = 3;
+        history.Record("third", () => value = 2, () => value = 3);
+        history.Undo(); history.Undo(); history.Undo();
+        Require(value == 1 && !history.CanUndo, "History must evict edits beyond its limit.");
+        history.Record("new branch", () => value = 1, () => value = 4);
+        Require(!history.CanRedo, "A new edit after undo must discard the old redo branch.");
+
+        var failing = new EditHistory();
+        failing.Record("failure", () => throw new InvalidOperationException("expected"), () => { });
+        try { failing.Undo(); }
+        catch (InvalidOperationException) { }
+        Require(failing.CanUndo && !failing.CanRedo, "A failed undo must not remove its history entry.");
+    }
+
+    private static void CheckMetadataHistoryIsolation()
+    {
+        var track = new Track { Title = "Original", PlayCount = 3, FilePath = "unchanged.mp3" };
+        var type = typeof(MainWindow).GetNestedType("TrackMetadata", BindingFlags.NonPublic)!;
+        var read = type.GetMethod("Read")!;
+        var apply = type.GetMethod("Apply")!;
+        var before = read.Invoke(null, [track]);
+        track.Title = "Edited";
+        var after = read.Invoke(null, [track]);
+        var history = new EditHistory();
+        history.Record("metadata", () => apply.Invoke(before, [track]), () => apply.Invoke(after, [track]));
+        track.PlayCount = 7; // Listening after an edit is not itself part of edit history.
+        history.Undo();
+        Require(track.Title == "Original" && track.PlayCount == 7 && track.FilePath == "unchanged.mp3", "Undo metadata must preserve playback counts and file identity.");
+        history.Redo();
+        Require(track.Title == "Edited" && track.PlayCount == 7, "Redo metadata must preserve later playback counts.");
+    }
+
+    private static void CheckTopMenuRebuild()
+    {
+        var attach = typeof(MainWindow).GetMethod("AttachTopMenu", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var menu = new MenuItem { Header = "Edit" };
+        menu.Items.Add(new MenuItem { Header = "Placeholder" });
+        var count = 0;
+        attach.Invoke(null, [menu, (Action<ItemsControl>)(target => { count++; target.Items.Add(new MenuItem { Header = $"Action {count}" }); })]);
+        menu.RaiseEvent(new RoutedEventArgs(MenuItem.SubmenuOpenedEvent, menu));
+        Require(count == 1 && menu.Items.Count == 1 && Equals(((MenuItem)menu.Items[0]).Header, "Action 1"), "Top menu must rebuild its actions when opened.");
+        menu.RaiseEvent(new RoutedEventArgs(MenuItem.SubmenuOpenedEvent, menu.Items[0]));
+        Require(count == 1, "Opening a nested submenu must not rebuild its parent.");
+        menu.RaiseEvent(new RoutedEventArgs(MenuItem.SubmenuOpenedEvent, menu));
+        Require(count == 2 && menu.Items.Count == 1, "Reopening must replace, not duplicate, menu actions.");
+    }
     private static void Require(bool condition, string message)
     {
         if (!condition) throw new InvalidOperationException(message);

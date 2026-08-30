@@ -10,10 +10,11 @@
  <Grid>
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="52"/><RowDefinition Height="*"/><RowDefinition Height="48"/><RowDefinition Height="62"/></Grid.RowDefinitions>
   <Menu Grid.Row="0" Background="#FAFAFB" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
-   <MenuItem Header="_File"><MenuItem Header="Add files to library…" Click="AddFiles_Click"/><Separator/><MenuItem Header="Update FFmpeg and yt-dlp…" Click="UpdateTools_Click"/><Separator/><MenuItem Header="Exit" Click="Exit_Click"/></MenuItem>
-   <MenuItem Header="_Edit"><MenuItem Header="Edit selected metadata…" Click="EditMetadata_Click"/><MenuItem Header="Remove from library" Click="RemoveTracks_Click"/></MenuItem>
-   <MenuItem Header="_View"><MenuItem Header="Music" IsChecked="True"/><MenuItem Header="Podcasts"/><MenuItem Header="Download"/></MenuItem>
-   <MenuItem Header="_Playback"><MenuItem Header="Play" Click="Play_Click"/><MenuItem Header="Pause" Click="Pause_Click"/><MenuItem Header="Stop" Click="Stop_Click"/></MenuItem>
+   <MenuItem x:Name="FileMenu" Header="_File"><MenuItem Header="Loading…" IsEnabled="False"/></MenuItem>
+   <MenuItem x:Name="EditMenu" Header="_Edit"><MenuItem Header="Loading…" IsEnabled="False"/></MenuItem>
+   <MenuItem x:Name="ViewMenu" Header="_View"><MenuItem Header="Loading…" IsEnabled="False"/></MenuItem>
+   <MenuItem x:Name="PlaybackMenu" Header="_Playback"><MenuItem Header="Loading…" IsEnabled="False"/></MenuItem>
+   <MenuItem Header="_Settings"><MenuItem Header="Settings…" Click="Settings_Click"/></MenuItem>
    <MenuItem Header="_Help"><MenuItem Header="About hTunes" Click="About_Click"/></MenuItem>
   </Menu>
   <Border Grid.Row="1" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1"><Grid Width="570" HorizontalAlignment="Center"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><RadioButton x:Name="MusicTab" Grid.Column="0" Content="♫  Music" Tag="Music" Checked="TopTab_Checked" Style="{StaticResource NavButton}" IsChecked="True" HorizontalContentAlignment="Center"/><RadioButton x:Name="PodcastsTab" Grid.Column="1" Content="◉  Podcasts" Tag="Podcasts" Checked="TopTab_Checked" Style="{StaticResource NavButton}" HorizontalContentAlignment="Center"/><RadioButton Grid.Column="2" Content="↓  Download" Style="{StaticResource NavButton}" IsEnabled="False" ToolTip="Coming next" HorizontalContentAlignment="Center"/><RadioButton x:Name="IPodTab" Grid.Column="3" Content="▣  iPod" Tag="IPod" Checked="TopTab_Checked" Style="{StaticResource NavButton}" Visibility="Collapsed" HorizontalContentAlignment="Center"/></Grid></Border>
