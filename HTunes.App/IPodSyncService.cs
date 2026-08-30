@@ -16,12 +16,15 @@ internal static class IPodSyncService
     private static readonly string[] SupportedExtensions = [".mp3", ".m4a", ".aac", ".wav", ".m4b", ".aa"];
     private const long SpaceReserve = 20L * 1024 * 1024;
 
-    public static SyncResult Sync(string rootPath, IReadOnlyCollection<Track> requested, IReadOnlyCollection<Track> library, bool randomFill, IProgress<SyncProgress>? progress = null)
+    public static SyncResult Sync(string rootPath, IReadOnlyCollection<Track> requested, IReadOnlyCollection<Track> library, bool randomFill, TranscodePreset preset, IProgress<SyncProgress>? progress = null)
     {
         var unique = requested.DistinctBy(t => t.Id).ToList();
         var missing = unique.Count(t => !File.Exists(t.FilePath));
         var eligible = unique.Where(t => File.Exists(t.FilePath)).ToList();
-        var unsupported = eligible.RemoveAll(t => !SupportedExtensions.Contains(Path.GetExtension(t.FilePath), StringComparer.OrdinalIgnoreCase) || new FileInfo(t.FilePath).Length > uint.MaxValue);
+        var unsupported = preset.IsOriginal
+            ? eligible.RemoveAll(t => !SupportedExtensions.Contains(Path.GetExtension(t.FilePath), StringComparer.OrdinalIgnoreCase) || new FileInfo(t.FilePath).Length > uint.MaxValue)
+            : 0;
+        var ffmpeg = preset.IsOriginal ? null : FFmpegTranscoder.FindExecutable();
         var ipod = IPod.GetiPodByDrive(rootPath, IPodLoadAction.NoSync);
         ipod.AssertIsWritable();
 
@@ -32,30 +35,46 @@ internal static class IPodSyncService
         if (randomFill) Shuffle(candidates);
 
         var remaining = Math.Max(0, new DriveInfo(rootPath).AvailableFreeSpace - SpaceReserve);
-        var selected = new List<Track>();
         var noSpace = 0;
-        foreach (var track in candidates)
-        {
-            var size = new FileInfo(track.FilePath).Length;
-            if (size <= remaining) { selected.Add(track); remaining -= size; }
-            else noSpace++;
-        }
-        if (selected.Count == 0) return new SyncResult(0, alreadyPresent, unsupported, missing, noSpace);
+        if (candidates.Count == 0) return new SyncResult(0, alreadyPresent, unsupported, missing, noSpace);
 
         var backup = BackupDatabase(rootPath);
         var added = new List<Clickwheel.Parsers.iTunesDB.Track>();
+        var temporaryDirectory = Path.Combine(Path.GetTempPath(), $"hTunes-transcode-{Guid.NewGuid():N}");
         Clickwheel.IPodBackup.EnableBackups = false;
         ipod.AcquireLock();
         try
         {
-            for (var index = 0; index < selected.Count; index++)
+            for (var index = 0; index < candidates.Count; index++)
             {
-                var source = selected[index];
-                progress?.Report(new SyncProgress(index, selected.Count, $"Copying {source.Title}"));
-                try { added.Add(ipod.Tracks.Add(CreateNewTrack(source, library))); }
-                catch (TrackAlreadyExistsException) { alreadyPresent++; }
+                var source = candidates[index];
+                var syncPath = source.FilePath;
+                try
+                {
+                    if (!preset.IsOriginal)
+                    {
+                        progress?.Report(new SyncProgress(index, candidates.Count, $"Transcoding {source.Title} to {preset.DisplayName}"));
+                        try { syncPath = FFmpegTranscoder.Transcode(ffmpeg!, source.FilePath, preset, temporaryDirectory); }
+                        catch (InvalidDataException) { unsupported++; continue; }
+                    }
+                    var size = new FileInfo(syncPath).Length;
+                    if (size > uint.MaxValue) { unsupported++; continue; }
+                    if (size > remaining) { noSpace++; continue; }
+                    progress?.Report(new SyncProgress(index, candidates.Count, $"Copying {source.Title}"));
+                    try
+                    {
+                        added.Add(ipod.Tracks.Add(CreateNewTrack(source, library, syncPath)));
+                        remaining -= size;
+                    }
+                    catch (TrackAlreadyExistsException) { alreadyPresent++; }
+                }
+                finally
+                {
+                    if (!preset.IsOriginal) FFmpegTranscoder.TryDelete(syncPath);
+                }
             }
-            progress?.Report(new SyncProgress(selected.Count, selected.Count, "Updating the iPod library"));
+            if (added.Count == 0) return new SyncResult(0, alreadyPresent, unsupported, missing, noSpace);
+            progress?.Report(new SyncProgress(candidates.Count, candidates.Count, "Updating the iPod library"));
             ipod.SaveChanges();
             return new SyncResult(added.Count, alreadyPresent, unsupported, missing, noSpace);
         }
@@ -76,15 +95,16 @@ internal static class IPodSyncService
         finally
         {
             try { ipod.ReleaseLock(); } catch { }
+            try { if (Directory.Exists(temporaryDirectory)) Directory.Delete(temporaryDirectory, true); } catch { }
         }
     }
 
-    private static NewTrack CreateNewTrack(Track source, IReadOnlyCollection<Track> library)
+    private static NewTrack CreateNewTrack(Track source, IReadOnlyCollection<Track> library, string syncPath)
     {
         uint length = 0, bitrate = 0;
         try
         {
-            using var media = TagLib.File.Create(source.FilePath);
+            using var media = TagLib.File.Create(syncPath);
             length = (uint)Math.Clamp(media.Properties.Duration.TotalMilliseconds, 0, uint.MaxValue);
             bitrate = (uint)Math.Max(0, media.Properties.AudioBitrate);
         }
@@ -92,7 +112,7 @@ internal static class IPodSyncService
         var albumTracks = library.Where(t => Same(t.Artist, source.Artist) && Same(t.Album, source.Album)).ToList();
         return new NewTrack
         {
-            FilePath = source.FilePath,
+            FilePath = syncPath,
             Title = source.Title,
             Artist = source.Artist,
             AlbumArtist = source.Artist,

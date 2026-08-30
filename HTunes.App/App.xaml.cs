@@ -24,7 +24,25 @@ public partial class App : Application
             }
             return;
         }
-        MainWindow = new MainWindow();
-        MainWindow.Show();
+        var mainWindow = new MainWindow();
+        MainWindow = mainWindow;
+        mainWindow.ContentRendered += CheckDependenciesOnFirstRender;
+        mainWindow.Show();
+    }
+
+    private async void CheckDependenciesOnFirstRender(object? sender, EventArgs e)
+    {
+        if (sender is not MainWindow mainWindow) return;
+        mainWindow.ContentRendered -= CheckDependenciesOnFirstRender;
+        try
+        {
+            using var updateCheckTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var issues = await ToolDependencyManager.CheckForUpdatesAsync(updateCheckTimeout.Token);
+            if (issues.Count > 0) new DependencySetupWindow(issues) { Owner = mainWindow }.ShowDialog();
+        }
+        catch
+        {
+            // An offline update check should never prevent the library from opening.
+        }
     }
 }

@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 namespace HTunes.App;
@@ -91,6 +92,7 @@ public partial class MainWindow : Window
             _ => null
         };
         SecondaryList.ItemsSource = null;
+        ShowArtwork([]);
         SetVisibleTracks(category == "Songs" ? source : []);
     }
 
@@ -98,9 +100,38 @@ public partial class MainWindow : Window
 
     private void SetVisibleTracks(IEnumerable<Track> tracks)
     {
+        var ordered = tracks.OrderBy(t => t.DiscNumber).ThenBy(t => t.TrackNumber).ThenBy(t => t.Title).ToList();
         VisibleTracks.Clear();
-        foreach (var track in tracks.OrderBy(t => t.DiscNumber).ThenBy(t => t.TrackNumber).ThenBy(t => t.Title)) VisibleTracks.Add(track);
+        foreach (var track in ordered) VisibleTracks.Add(track);
         EmptyState.Visibility = VisibleTracks.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        ShowArtwork(ordered);
+    }
+
+    private void ShowArtwork(IEnumerable<Track> tracks)
+    {
+        var path = tracks.Select(t => t.ArtworkPath).FirstOrDefault(p => !string.IsNullOrWhiteSpace(p) && File.Exists(p));
+        if (path is null)
+        {
+            AlbumArtworkImage.Source = null;
+            AlbumArtworkPlaceholder.Visibility = Visibility.Visible;
+            return;
+        }
+        try
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.UriSource = new Uri(path, UriKind.Absolute);
+            image.EndInit();
+            image.Freeze();
+            AlbumArtworkImage.Source = image;
+            AlbumArtworkPlaceholder.Visibility = Visibility.Collapsed;
+        }
+        catch
+        {
+            AlbumArtworkImage.Source = null;
+            AlbumArtworkPlaceholder.Visibility = Visibility.Visible;
+        }
     }
 
     private static bool MatchesSearch(Track t, string search) => string.IsNullOrEmpty(search) || new[] { t.Title, t.Artist, t.Album, t.Genre }.Any(v => v.Contains(search, StringComparison.OrdinalIgnoreCase));
@@ -129,6 +160,12 @@ public partial class MainWindow : Window
     private void SecondaryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (PrimaryList.SelectedItem is string artist && SecondaryList.SelectedItem is string album) SetVisibleTracks(SourceTracks.Where(t => Same(t.Artist, artist) && Same(t.Album, album)));
+    }
+
+    private void TracksGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        var selected = SelectedTracks();
+        if (selected.Count > 0) ShowArtwork(selected);
     }
 
     private static bool Same(string a, string b) => a.Equals(b, StringComparison.OrdinalIgnoreCase);
@@ -338,7 +375,11 @@ public partial class MainWindow : Window
                 {
                     var local = allTracks.FirstOrDefault(t => TrackIdentity.Key(t.Title, t.Artist, t.Album, t.TrackNumber)
                         .Equals(TrackIdentity.Key(ipodTrack.Title, ipodTrack.Artist, ipodTrack.Album, ipodTrack.TrackNumber), StringComparison.OrdinalIgnoreCase));
-                    if (local is not null) ipodTrack.PlayCount = local.PlayCount;
+                    if (local is not null)
+                    {
+                        ipodTrack.PlayCount = local.PlayCount;
+                        ipodTrack.ArtworkPath = local.ArtworkPath;
+                    }
                 }
                 ipodTracks = tracks;
             }
@@ -382,14 +423,16 @@ public partial class MainWindow : Window
         var requested = allTracks.Where(t => requestedIds.Contains(t.Id)).ToList();
         if (requested.Count == 0) { MessageBox.Show(this, "There are no library tracks in this selection.", "Nothing to sync"); return; }
         var device = currentDevice;
+        var preset = TranscodePresets.Get(TranscodeComboBox.SelectedValue as string);
         isSyncing = true; deviceTimer.Stop();
         SyncAllButton.IsEnabled = EjectButton.IsEnabled = false;
+        TranscodeComboBox.IsEnabled = false;
         SyncAllButton.Content = "Syncing…";
         try
         {
             if (!await EnsureIPodPreparedAsync(device)) return;
             var progress = new Progress<SyncProgress>(p => DeviceDetailsText.Text = $"  •  {p.Message}  ({Math.Min(p.Completed + 1, p.Total)}/{p.Total})");
-            var result = await Task.Run(() => IPodSyncService.Sync(device.RootPath, requested, allTracks, randomFill, progress));
+            var result = await Task.Run(() => IPodSyncService.Sync(device.RootPath, requested, allTracks, randomFill, preset, progress));
             currentDevice = IPodDetector.FindConnected();
             if (currentDevice is not null)
             {
@@ -405,7 +448,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            isSyncing = false; SyncAllButton.Content = "Sync all"; deviceTimer.Start(); RefreshDevice();
+            isSyncing = false; TranscodeComboBox.IsEnabled = true; SyncAllButton.Content = "Sync all"; deviceTimer.Start(); RefreshDevice();
         }
     }
 
@@ -475,6 +518,15 @@ public partial class MainWindow : Window
         TracksGrid.SelectedIndex = (Math.Max(0, TracksGrid.SelectedIndex) + offset + VisibleTracks.Count) % VisibleTracks.Count; TracksGrid.ScrollIntoView(TracksGrid.SelectedItem); PlaySelected();
     }
     private void About_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this, "hTunes\nA modern Windows music library and iPod companion.", "About hTunes");
+    private void UpdateTools_Click(object sender, RoutedEventArgs e)
+    {
+        ToolIssue[] tools =
+        [
+            new(ExternalTool.FFmpeg, ToolIssueKind.Reinstall),
+            new(ExternalTool.YtDlp, ToolIssueKind.Reinstall)
+        ];
+        new DependencySetupWindow(tools) { Owner = this }.ShowDialog();
+    }
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e) { deviceTimer.Stop(); playCountSyncTimer.Stop(); SaveLibrary(); player.Close(); base.OnClosing(e); }
 }
