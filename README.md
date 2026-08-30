@@ -6,7 +6,7 @@ A Windows music library and iPod companion built with C# and WPF.
 
 - Browse by artist, album, genre, or song
 - Show source format and bitrate for library and iPod music
-- Import audio using File → Add files or drag-and-drop from Explorer
+- Import audio using File → Add files or drag files/folders from Explorer; folder imports include all nested folders
 - Multi-select with Ctrl/Shift and batch-edit metadata and artwork
 - Show embedded or assigned album artwork as albums and songs are selected
 - Create playlists and drag selected songs onto them
@@ -28,7 +28,9 @@ A Windows music library and iPod companion built with C# and WPF.
 - Download, play, delete, and mark individual podcast episodes played or unplayed
 - Configure each show to sync a chosen number of its newest or oldest unplayed episodes
 - Download missing episodes during podcast sync and mirror those retention rules to the iPod
+- Write the stock iPod podcast groups and browse on-device episodes under the iPod tab's Podcasts category
 - Remove completed podcast downloads from both hTunes and the iPod when playback finishes
+- Synchronize podcast bookmark positions, show elapsed time and percentage, and treat 50% playback as played
 - Preserve podcast and music play-count changes during the same startup/hot-plug reconciliation
 
 Run with `dotnet run --project HTunes.App`.

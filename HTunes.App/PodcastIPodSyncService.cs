@@ -12,7 +12,7 @@ internal sealed record PodcastSyncResult(int Added, int Removed, int AlreadyPres
         $"{AlreadyPresent} already on the iPod, and {Missing} could not be copied.";
 }
 
-internal sealed record PlayedPodcastEpisode(string EpisodeId, string ShowTitle);
+internal sealed record PodcastPlaybackUpdate(string EpisodeId, string ShowTitle, long PositionMs, long DurationMs, bool IsPlayed);
 
 internal static class PodcastIPodSyncService
 {
@@ -44,7 +44,18 @@ internal static class PodcastIPodSyncService
                 }
             }
 
-            var podcastPlaylist = GetWritablePodcastPlaylist(ipod);
+            var (podcastPlaylist, needsPlaylistRepair) = GetWritablePodcastPlaylist(ipod);
+            // Establish/repair the normal Podcasts playlist before the final save. Clickwheel then mirrors it
+            // into the special grouped podcast section used by the stock iPod Podcasts menu.
+            ipod.SaveChanges();
+            if (needsPlaylistRepair)
+            {
+                foreach (var track in podcastPlaylist.Tracks.ToList())
+                {
+                    podcastPlaylist.RemoveTrack(track);
+                    podcastPlaylist.AddTrack(track);
+                }
+            }
             var alreadyPresent = 0;
             var missing = 0;
             foreach (var selection in selections)
@@ -111,18 +122,23 @@ internal static class PodcastIPodSyncService
         };
     }
 
-    private static IPodPlaylist GetWritablePodcastPlaylist(IPod ipod)
+    private static (IPodPlaylist Playlist, bool NeedsRepair) GetWritablePodcastPlaylist(IPod ipod)
     {
         var playlists = new List<IPodPlaylist>();
         foreach (var playlist in ipod.Playlists) playlists.Add(playlist);
         var result = playlists.FirstOrDefault(playlist => playlist.Name.Equals("Podcasts", StringComparison.OrdinalIgnoreCase));
         if (result is null)
         {
-            result = ipod.Playlists.Add("hTunes Podcasts");
-            result.Name = "Podcasts";
+            result = ipod.Playlists.Add("Podcasts");
+            return (result, false);
         }
-        if (result.IsPodcastPlaylist) result.IsPodcastPlaylist = false;
-        return result;
+        if (result.IsPodcastPlaylist) return (result, false);
+
+        // Older hTunes builds accidentally made this a normal playlist. Setting the name marks the
+        // playlist dirty, and the second save in Sync rebuilds its special podcast group entries.
+        result.Name = "Podcasts";
+        result.IsPodcastPlaylist = true;
+        return (result, true);
     }
 
     private static List<IPodTrack> Tracks(IPod ipod)

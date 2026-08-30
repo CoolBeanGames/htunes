@@ -1,10 +1,11 @@
 using Clickwheel;
 using System.IO;
+using System.Reflection;
 
 namespace HTunes.App;
 
 internal sealed record PlayCountUpdate(Guid TrackId, int Count, string DeviceId);
-internal sealed record PlayCountReconcileResult(IReadOnlyList<PlayCountUpdate> MusicUpdates, IReadOnlyList<PlayedPodcastEpisode> PlayedPodcasts);
+internal sealed record PlayCountReconcileResult(IReadOnlyList<PlayCountUpdate> MusicUpdates, IReadOnlyList<PodcastPlaybackUpdate> PodcastUpdates);
 
 internal static class TrackIdentity
 {
@@ -25,6 +26,7 @@ internal static class IPodPlayCountService
         var countsBackup = Path.Combine(backupDirectory, $"PlayCounts-{token}.backup");
         var mediaBackupDirectory = Path.Combine(Path.GetTempPath(), $"hTunes-podcast-playback-{Guid.NewGuid():N}");
         var removedMedia = new List<(string Original, string Backup)>();
+        var bookmarks = ReadBookmarkPositions(playCountsPath);
         File.Copy(dbPath, dbBackup, true);
         if (File.Exists(playCountsPath)) File.Copy(playCountsPath, countsBackup, true);
 
@@ -40,16 +42,26 @@ internal static class IPodPlayCountService
             var updates = new List<PlayCountUpdate>();
             var ipodTracks = new List<Clickwheel.Parsers.iTunesDB.Track>();
             foreach (var item in ipod.Tracks) ipodTracks.Add(item);
-            var playedPodcasts = new List<PlayedPodcastEpisode>();
-            foreach (var ipodTrack in ipodTracks)
+            var podcastUpdates = new List<PodcastPlaybackUpdate>();
+            for (var index = 0; index < ipodTracks.Count; index++)
             {
+                var ipodTrack = ipodTracks[index];
                 var podcast = FindPodcastEpisode(podcastShows, ipodTrack);
-                if (podcast is not null && (podcast.Value.Episode.IsPlayed || ipodTrack.PlayCount > 0))
+                if (podcast is not null)
                 {
-                    playedPodcasts.Add(new PlayedPodcastEpisode(podcast.Value.Episode.Id, podcast.Value.Show.Title));
-                    BackupMedia(rootPath, ipodTrack.FilePath, mediaBackupDirectory, removedMedia);
-                    ipod.Tracks.Remove(ipodTrack);
-                    continue;
+                    var ipodPosition = index < bookmarks.Count ? Math.Max(0, bookmarks[index]) : 0;
+                    var position = Math.Max(ipodPosition, podcast.Value.Episode.PlaybackPositionMs);
+                    var ipodDuration = (long)ipodTrack.Length.MilliSeconds;
+                    var duration = ipodDuration > 0 ? ipodDuration : podcast.Value.Episode.DurationMs;
+                    var isPlayed = podcast.Value.Episode.IsPlayed || ipodTrack.PlayCount > 0 || duration > 0 && position * 2L >= duration;
+                    podcastUpdates.Add(new PodcastPlaybackUpdate(podcast.Value.Episode.Id, podcast.Value.Show.Title, position, duration, isPlayed));
+                    if (isPlayed)
+                    {
+                        BackupMedia(rootPath, ipodTrack.FilePath, mediaBackupDirectory, removedMedia);
+                        ipod.Tracks.Remove(ipodTrack);
+                        continue;
+                    }
+                    SetBookmark(ipodTrack, position);
                 }
                 var key = TrackIdentity.Key(ipodTrack.Title, ipodTrack.Artist, ipodTrack.Album, checked((int)ipodTrack.TrackNumber));
                 if (!localByKey.TryGetValue(key, out var local)) continue;
@@ -66,7 +78,7 @@ internal static class IPodPlayCountService
             }
             ipod.SaveChanges();
             CleanupBackups(backupDirectory);
-            return new PlayCountReconcileResult(updates, playedPodcasts);
+            return new PlayCountReconcileResult(updates, podcastUpdates);
         }
         catch
         {
@@ -80,6 +92,43 @@ internal static class IPodPlayCountService
         {
             try { ipod?.ReleaseLock(); } catch { }
             try { if (Directory.Exists(mediaBackupDirectory)) Directory.Delete(mediaBackupDirectory, true); } catch { }
+        }
+    }
+
+    private static void SetBookmark(Clickwheel.Parsers.iTunesDB.Track track, long positionMs)
+    {
+        var value = (uint)Math.Clamp(positionMs, 0, uint.MaxValue);
+        typeof(Clickwheel.Parsers.iTunesDB.Track).GetField("_bookmarkTime", BindingFlags.Instance | BindingFlags.NonPublic)?.SetValue(track, value);
+        track.RememberPlaybackPosition = true;
+    }
+
+    private static IReadOnlyList<int> ReadBookmarkPositions(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return [];
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new BinaryReader(stream);
+            if (stream.Length < 16 || new string(reader.ReadChars(4)) != "mhdp") return [];
+            var headerSize = reader.ReadInt32();
+            var entrySize = reader.ReadInt32();
+            var entryCount = reader.ReadInt32();
+            if (headerSize < 16 || entrySize < 12 || entryCount < 0 || headerSize + (long)entrySize * entryCount > stream.Length) return [];
+            stream.Position = headerSize;
+            var result = new List<int>(entryCount);
+            for (var index = 0; index < entryCount; index++)
+            {
+                var entryStart = stream.Position;
+                _ = reader.ReadInt32();
+                _ = reader.ReadUInt32();
+                result.Add(Math.Max(0, reader.ReadInt32()));
+                stream.Position = entryStart + entrySize;
+            }
+            return result;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or EndOfStreamException)
+        {
+            return [];
         }
     }
 

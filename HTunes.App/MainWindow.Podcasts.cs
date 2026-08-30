@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 
 namespace HTunes.App;
 
@@ -15,6 +16,8 @@ public partial class MainWindow
     private bool podcastsRefreshedThisSession;
     private PodcastEpisode? currentPodcastEpisode;
     private PodcastShow? currentPodcastPlaybackShow;
+    private readonly DispatcherTimer podcastPlaybackTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private DateTime lastPodcastProgressSaveUtc;
     public ObservableCollection<PodcastShow> PodcastShows { get; } = [];
     public ObservableCollection<PodcastSearchResult> PodcastSearchResults { get; } = [];
 
@@ -23,6 +26,8 @@ public partial class MainWindow
         LoadPodcastLibrary();
         PodcastShowsList.ItemsSource = PodcastShows;
         PodcastSearchResultsList.ItemsSource = PodcastSearchResults;
+        podcastPlaybackTimer.Tick += (_, _) => CapturePodcastPlaybackProgress();
+        player.MediaOpened += (_, _) => PodcastMediaOpened();
         RefreshPodcastShowPanel();
     }
 
@@ -36,7 +41,18 @@ public partial class MainWindow
             foreach (var show in data.Shows)
             {
                 foreach (var episode in show.Episodes)
+                {
                     if (!string.IsNullOrWhiteSpace(episode.LocalPath) && !File.Exists(episode.LocalPath)) episode.LocalPath = null;
+                    else if (episode.IsDownloaded && episode.DurationMs <= 0)
+                    {
+                        try
+                        {
+                            using var media = TagLib.File.Create(episode.LocalPath!);
+                            episode.DurationMs = Math.Max(0, (long)media.Properties.Duration.TotalMilliseconds);
+                        }
+                        catch { }
+                    }
+                }
                 PodcastShows.Add(show);
             }
         }
@@ -224,20 +240,74 @@ public partial class MainWindow
     {
         if (sender is not Button { DataContext: PodcastEpisode episode } || SelectedPodcastShow is not { } show) return;
         if (!episode.IsDownloaded && !await DownloadPodcastEpisodeAsync(show, episode)) return;
+        if (currentPodcastEpisode is not null) FinalizePodcastPlayback();
         currentPodcastEpisode = episode;
         currentPodcastPlaybackShow = show;
         player.Open(new Uri(episode.LocalPath!)); player.Play();
+        podcastPlaybackTimer.Start();
         NowPlayingTitle.Text = episode.Title; NowPlayingArtist.Text = show.Title;
+    }
+
+    private void PodcastMediaOpened()
+    {
+        if (currentPodcastEpisode is not { } episode) return;
+        if (player.NaturalDuration.HasTimeSpan)
+            episode.DurationMs = Math.Max(0, (long)player.NaturalDuration.TimeSpan.TotalMilliseconds);
+        if (!episode.IsPlayed && episode.PlaybackPositionMs > 0 && (episode.DurationMs <= 0 || episode.PlaybackPositionMs < episode.DurationMs))
+            player.Position = TimeSpan.FromMilliseconds(episode.PlaybackPositionMs);
+        podcastPlaybackTimer.Start();
+    }
+
+    private void CapturePodcastPlaybackProgress()
+    {
+        if (currentPodcastEpisode is not { } episode) return;
+        try
+        {
+            if (player.NaturalDuration.HasTimeSpan)
+                episode.DurationMs = Math.Max(0, (long)player.NaturalDuration.TimeSpan.TotalMilliseconds);
+            episode.PlaybackPositionMs = Math.Max(episode.PlaybackPositionMs, (long)player.Position.TotalMilliseconds);
+            if (!episode.IsPlayed && episode.DurationMs > 0 && episode.PlaybackPositionMs * 2L >= episode.DurationMs)
+            {
+                PodcastService.MarkPlayed(episode, deleteDownload: false);
+                SavePodcastLibrary();
+                lastPodcastProgressSaveUtc = DateTime.UtcNow;
+            }
+            else if (DateTime.UtcNow - lastPodcastProgressSaveUtc >= TimeSpan.FromSeconds(10))
+            {
+                SavePodcastLibrary();
+                lastPodcastProgressSaveUtc = DateTime.UtcNow;
+            }
+            if (isPodcastView) PodcastEpisodesGrid.Items.Refresh();
+        }
+        catch (InvalidOperationException) { }
     }
 
     private void PodcastPlaybackEnded()
     {
         if (currentPodcastEpisode is null) return;
+        CapturePodcastPlaybackProgress();
+        if (currentPodcastEpisode.DurationMs > 0) currentPodcastEpisode.PlaybackPositionMs = currentPodcastEpisode.DurationMs;
+        podcastPlaybackTimer.Stop();
         player.Close();
         PodcastService.MarkPlayed(currentPodcastEpisode);
         currentPodcastEpisode = null;
         currentPodcastPlaybackShow = null;
         SavePodcastLibrary(); RefreshPodcastShowPanel(); ScheduleConnectedPodcastCleanup();
+    }
+
+    private void FinalizePodcastPlayback()
+    {
+        if (currentPodcastEpisode is not { } episode) return;
+        CapturePodcastPlaybackProgress();
+        podcastPlaybackTimer.Stop();
+        player.Stop();
+        player.Close();
+        if (episode.IsPlayed) PodcastService.MarkPlayed(episode);
+        currentPodcastEpisode = null;
+        currentPodcastPlaybackShow = null;
+        SavePodcastLibrary();
+        if (isPodcastView) RefreshPodcastShowPanel();
+        if (episode.IsPlayed) ScheduleConnectedPodcastCleanup();
     }
 
     private void ScheduleConnectedPodcastCleanup()
@@ -250,6 +320,8 @@ public partial class MainWindow
     private void PreparePodcastFileDeletion(PodcastEpisode episode)
     {
         if (!ReferenceEquals(currentPodcastEpisode, episode)) return;
+        CapturePodcastPlaybackProgress();
+        podcastPlaybackTimer.Stop();
         player.Stop(); player.Close();
         currentPodcastEpisode = null;
         currentPodcastPlaybackShow = null;

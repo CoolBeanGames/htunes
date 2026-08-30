@@ -68,6 +68,7 @@ internal static class PodcastService
             episode.Description = StripMarkup(ChildValue(item, "description", "summary", "content") ?? episode.Description);
             episode.EpisodeNumber = ChildValue(item, "episode") ?? episode.EpisodeNumber;
             episode.PublishedUtc = ParseDate(ChildValue(item, "pubDate", "published", "updated"), episode.PublishedUtc);
+            episode.DurationMs = ParseDuration(ChildValue(item, "duration"), episode.DurationMs);
             episode.EnclosureUrl = enclosure.Url;
             episode.MimeType = enclosure.Type;
             episode.EnclosureLength = enclosure.Length;
@@ -87,11 +88,17 @@ internal static class PodcastService
 
     public static IReadOnlyList<PodcastEpisode> EpisodesForSync(PodcastShow show)
     {
-        var candidates = show.Episodes.Where(episode => !episode.IsPlayed);
-        candidates = show.SyncOrder.Equals("Oldest", StringComparison.OrdinalIgnoreCase)
-            ? candidates.OrderBy(episode => episode.PublishedUtc)
-            : candidates.OrderByDescending(episode => episode.PublishedUtc);
-        return candidates.Take(Math.Max(0, show.SyncEpisodeCount)).ToList();
+        var unplayed = show.Episodes.Where(episode => !episode.IsPlayed).ToList();
+        var ordered = show.SyncOrder.Equals("Oldest", StringComparison.OrdinalIgnoreCase)
+            ? unplayed.OrderBy(episode => episode.PublishedUtc)
+            : unplayed.OrderByDescending(episode => episode.PublishedUtc);
+
+        // The per-show count controls automatic downloads. A manual download is an explicit request
+        // to keep/sync that episode too, even when it falls outside the automatic newest/oldest set.
+        return ordered.Take(Math.Max(0, show.SyncEpisodeCount))
+            .Concat(unplayed.Where(episode => episode.IsDownloaded))
+            .DistinctBy(episode => episode.Id, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     public static async Task DownloadEpisodeAsync(PodcastShow show, PodcastEpisode episode, IProgress<double>? progress = null, CancellationToken cancellationToken = default)
@@ -123,21 +130,29 @@ internal static class PodcastService
             }
             File.Move(temporaryPath, finalPath, true);
             episode.LocalPath = finalPath;
+            try
+            {
+                using var media = TagLib.File.Create(finalPath);
+                var measuredDuration = (long)media.Properties.Duration.TotalMilliseconds;
+                if (measuredDuration > 0) episode.DurationMs = measuredDuration;
+            }
+            catch { }
         }
         finally { TryDelete(temporaryPath); }
     }
 
-    public static void MarkPlayed(PodcastEpisode episode)
+    public static void MarkPlayed(PodcastEpisode episode, bool deleteDownload = true)
     {
         episode.IsPlayed = true;
         episode.PlayedUtc = DateTime.UtcNow;
-        DeleteDownload(episode);
+        if (deleteDownload) DeleteDownload(episode);
     }
 
     public static void MarkUnplayed(PodcastEpisode episode)
     {
         episode.IsPlayed = false;
         episode.PlayedUtc = null;
+        episode.PlaybackPositionMs = 0;
     }
 
     public static void DeleteDownload(PodcastEpisode episode)
@@ -180,6 +195,13 @@ internal static class PodcastService
 
     private static DateTime ParseDate(string? value, DateTime fallback) =>
         DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var parsed) ? parsed.UtcDateTime : fallback;
+
+    private static long ParseDuration(string? value, long fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return fallback;
+        if (TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out var duration)) return Math.Max(0, (long)duration.TotalMilliseconds);
+        return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) ? Math.Max(0, (long)(seconds * 1000)) : fallback;
+    }
 
     private static string StripMarkup(string value)
     {

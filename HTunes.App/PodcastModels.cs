@@ -36,6 +36,8 @@ public sealed class PodcastEpisode
     public string? LocalPath { get; set; }
     public bool IsPlayed { get; set; }
     public DateTime? PlayedUtc { get; set; }
+    public long PlaybackPositionMs { get; set; }
+    public long DurationMs { get; set; }
 
     [JsonIgnore] public bool IsDownloaded => !string.IsNullOrWhiteSpace(LocalPath) && File.Exists(LocalPath);
     [JsonIgnore] public bool IsNotDownloaded => !IsDownloaded;
@@ -43,7 +45,15 @@ public sealed class PodcastEpisode
     [JsonIgnore] public string ArtworkDisplay => ArtworkUrl;
     [JsonIgnore] public string EpisodeNumberDisplay => string.IsNullOrWhiteSpace(EpisodeNumber) ? "—" : EpisodeNumber;
     [JsonIgnore] public string PublishedDisplay => PublishedUtc == default ? "—" : PublishedUtc.ToLocalTime().ToString("MMM d, yyyy");
-    [JsonIgnore] public string StateDisplay => $"{(IsPlayed ? "Played" : "Unplayed")}  •  {(IsDownloaded ? "Downloaded" : "Not downloaded")}";
+    [JsonIgnore] public double PlaybackPercent => DurationMs > 0 ? Math.Clamp(PlaybackPositionMs * 100d / DurationMs, 0, 100) : 0;
+    [JsonIgnore] public string ProgressDisplay => PlaybackPositionMs <= 0 || DurationMs <= 0 ? "" : $"  •  {Time(PlaybackPositionMs)} of {Time(DurationMs)} ({PlaybackPercent:0}%)";
+    [JsonIgnore] public string StateDisplay => $"{(IsPlayed ? "Played" : "Unplayed")}  •  {(IsDownloaded ? "Downloaded" : "Not downloaded")}{ProgressDisplay}";
+
+    private static string Time(long milliseconds)
+    {
+        var value = TimeSpan.FromMilliseconds(Math.Max(0, milliseconds));
+        return value.TotalHours >= 1 ? value.ToString(@"h\:mm\:ss") : value.ToString(@"m\:ss");
+    }
 }
 
 public sealed class PodcastLibraryData
