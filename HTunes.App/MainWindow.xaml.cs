@@ -45,7 +45,7 @@ public partial class MainWindow : Window
         if (!initializeServices && isolatedLibraryFile is not null) dataFile = Path.GetFullPath(isolatedLibraryFile);
         InitializeComponent(); DataContext = this;
         if (initializeServices) { LoadPreferences(); LoadLibrary(); }
-        InitializePodcastUi(initializeServices); InitializeContextMenus(); InitializeTagEditor(); InitializeTopMenus(); InitializeNavigation(); RefreshBrowser();
+        InitializePodcastUi(initializeServices); InitializeContextMenus(); InitializeTagEditor(); InitializeRenameEditor(); InitializeTopMenus(); InitializeNavigation(); RefreshBrowser();
         if (!initializeServices) return;
         RefreshDevice();
         player.MediaEnded += (_, _) => { if (currentPodcastEpisode is not null) PodcastPlaybackEnded(); else NextTrack(); };
@@ -106,6 +106,7 @@ public partial class MainWindow : Window
     private void RefreshBrowser()
     {
         if (isTagView) RefreshTagLibrary();
+        if (isRenameView) RefreshRenameLibrary();
         var search = SearchBox?.Text?.Trim() ?? "";
         var viewTracks = SourceTracks;
         var categoryTracks = isIPodView
@@ -208,16 +209,19 @@ public partial class MainWindow : Window
         isPodcastView = tab == "Podcasts";
         isDownloadView = tab == "Download";
         isTagView = tab == "Tag";
+        isRenameView = tab == "Rename";
         isIPodView = tab == "IPod";
         IPodPodcastsCategoryButton.Visibility = isIPodView ? Visibility.Visible : Visibility.Collapsed;
         if (!isIPodView && category == "Podcast") ArtistCategoryButton.IsChecked = true;
-        MusicWorkspace.Visibility = isPodcastView || isDownloadView || isTagView ? Visibility.Collapsed : Visibility.Visible;
+        MusicWorkspace.Visibility = isPodcastView || isDownloadView || isTagView || isRenameView ? Visibility.Collapsed : Visibility.Visible;
         PodcastWorkspace.Visibility = isPodcastView ? Visibility.Visible : Visibility.Collapsed;
         DownloadWorkspace.Visibility = isDownloadView ? Visibility.Visible : Visibility.Collapsed;
         TagWorkspace.Visibility = isTagView ? Visibility.Visible : Visibility.Collapsed;
+        RenameWorkspace.Visibility = isRenameView ? Visibility.Visible : Visibility.Collapsed;
         UpdateDeviceStripMode();
-        if (isTagView) RefreshTagLibrary();
-        else if (isPodcastView && !isYtDownloading && !isTagSaving) _ = EnterPodcastViewAsync(); else if (!isDownloadView && !isPodcastView) ResetMusicNavigation();
+        if (isRenameView) RefreshRenameLibrary();
+        else if (isTagView) RefreshTagLibrary();
+        else if (isPodcastView && !isYtDownloading && !isTagSaving && !isRenaming) _ = EnterPodcastViewAsync(); else if (!isDownloadView && !isPodcastView) ResetMusicNavigation();
         UpdateDownloadControls();
     }
     private void Category_Checked(object sender, RoutedEventArgs e) { if (!IsLoaded || sender is not RadioButton button) return; category = button.Tag?.ToString() ?? "Artist"; ResetMusicNavigation(); }
@@ -251,7 +255,7 @@ public partial class MainWindow : Window
 
     private void ImportPaths(IEnumerable<string> paths)
     {
-        if (isSyncing || isReconcilingPlayCounts || autoSyncRunning || isYtDownloading || isTagSaving) return;
+        if (isSyncing || isReconcilingPlayCounts || autoSyncRunning || isYtDownloading || isTagSaving || isRenaming) return;
         var before = allTracks.ToList();
         var files = paths.SelectMany(path => Directory.Exists(path) ? EnumerateFilesSafely(path) : [path])
             .Where(path => File.Exists(path) && AudioExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
@@ -326,7 +330,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private List<Track> SelectedTracks() => isTagView ? TagSelection : TracksGrid.SelectedItems.Cast<Track>().ToList();
+    private List<Track> SelectedTracks() => isRenameView ? RenameSelection : isTagView ? TagSelection : TracksGrid.SelectedItems.Cast<Track>().ToList();
     private void EditMetadata_Click(object sender, RoutedEventArgs e)
     {
         if (isIPodView) return;
@@ -433,7 +437,7 @@ public partial class MainWindow : Window
 
     private void RefreshDevice()
     {
-        if (isSyncing || isReconcilingPlayCounts || isYtDownloading || isTagSaving) return;
+        if (isSyncing || isReconcilingPlayCounts || isYtDownloading || isTagSaving || isRenaming) return;
         var device = IPodDetector.FindConnected();
         if (device is null)
         {
@@ -479,7 +483,7 @@ public partial class MainWindow : Window
 
     private async Task ReconcilePlayCountsAsync(IPodDevice device, bool duringSync = false)
     {
-        if (isTagSaving || isYtDownloading || isReconcilingPlayCounts || (isSyncing && !duringSync)) return;
+        if (isRenaming || isTagSaving || isYtDownloading || isReconcilingPlayCounts || (isSyncing && !duringSync)) return;
         var sysInfoPath = Path.Combine(device.RootPath, "iPod_Control", "Device", "SysInfoExtended");
         if (!File.Exists(sysInfoPath) || new FileInfo(sysInfoPath).Length == 0) return;
         isReconcilingPlayCounts = true;
@@ -619,13 +623,13 @@ public partial class MainWindow : Window
     private void UpdateDeviceStripMode()
     {
         if (TranscodeComboBox is null || SyncAllButton is null) return;
-        TranscodeComboBox.Visibility = isPodcastView || isDownloadView || isTagView ? Visibility.Collapsed : Visibility.Visible;
+        TranscodeComboBox.Visibility = isPodcastView || isDownloadView || isTagView || isRenameView ? Visibility.Collapsed : Visibility.Visible;
         if (!isSyncing) SyncAllButton.Content = isPodcastView ? "Sync podcasts" : "Sync all";
     }
 
     private async Task SyncTracksAsync(IEnumerable<Guid> ids, bool randomFill, Playlist? playlist = null, bool showSummary = true)
     {
-        if (isTagSaving || isYtDownloading || isSyncing || isReconcilingPlayCounts || currentDevice is null) return;
+        if (isRenaming || isTagSaving || isYtDownloading || isSyncing || isReconcilingPlayCounts || currentDevice is null) return;
         var requestedIds = ids.ToHashSet();
         var requested = allTracks.Where(t => requestedIds.Contains(t.Id)).ToList();
         if (requested.Count == 0 && playlist is null) { if (showSummary) MessageBox.Show(this, "There are no library tracks in this selection.", "Nothing to sync"); return; }
@@ -701,7 +705,7 @@ public partial class MainWindow : Window
 
     private void Eject_Click(object sender, RoutedEventArgs e)
     {
-        if (currentDevice is null || isSyncing || isReconcilingPlayCounts || autoSyncRunning || isYtDownloading || isTagSaving) return;
+        if (currentDevice is null || isSyncing || isReconcilingPlayCounts || autoSyncRunning || isYtDownloading || isTagSaving || isRenaming) return;
         pendingAutoSyncRoot = null;
         DebugLog.Write("Device", $"Eject requested: {currentDevice.RootPath}");
         if (currentPodcastEpisode is not null) FinalizePodcastPlayback();
@@ -717,7 +721,7 @@ public partial class MainWindow : Window
     private void Play_Click(object sender, RoutedEventArgs e) { if (player.Source is null) PlaySelected(); else player.Play(); }
     private void PlaySelected()
     {
-        if (isTagSaving || (isTagView ? TagTracksGrid.SelectedItem : TracksGrid.SelectedItem) is not Track track) return;
+        if (isRenaming || isTagSaving || (isRenameView ? (RenameTracksGrid.SelectedItem as RenameGridRow)?.Track : isTagView ? TagTracksGrid.SelectedItem : TracksGrid.SelectedItem) is not Track track) return;
         if (currentPodcastEpisode is not null) FinalizePodcastPlayback();
         player.Open(new Uri(track.FilePath)); player.Play();
         var countedTrack = track;
@@ -738,6 +742,12 @@ public partial class MainWindow : Window
     private void NextTrack() => MoveSelection(1);
     private void MoveSelection(int offset)
     {
+        if (isRenameView)
+        {
+            if (isRenaming || RenameTracksGrid.Items.Count == 0) return;
+            RenameTracksGrid.SelectedIndex = (Math.Max(0, RenameTracksGrid.SelectedIndex) + offset + RenameTracksGrid.Items.Count) % RenameTracksGrid.Items.Count;
+            RenameTracksGrid.ScrollIntoView(RenameTracksGrid.SelectedItem); PlaySelected(); return;
+        }
         if (isTagView)
         {
             if (isTagSaving || TagTracksGrid.Items.Count == 0) return;
@@ -761,7 +771,7 @@ public partial class MainWindow : Window
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         if (!initializeServices) { player.Close(); base.OnClosing(e); return; }
-        if (isTagSaving || isYtDownloading || isSyncing || isReconcilingPlayCounts || activePodcastDownloads > 0 || podcastFeedOperations > 0 || autoSyncRunning || OwnedWindows.Count > 0)
+        if (isRenaming || isTagSaving || isYtDownloading || isSyncing || isReconcilingPlayCounts || activePodcastDownloads > 0 || podcastFeedOperations > 0 || autoSyncRunning || OwnedWindows.Count > 0)
         {
             e.Cancel = true;
             MessageBox.Show(this, "Please finish the current operation and close any hTunes dialogs before exiting.", "hTunes is busy");

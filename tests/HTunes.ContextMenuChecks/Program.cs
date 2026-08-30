@@ -32,8 +32,9 @@ internal static partial class Program
             CheckSinglePanelNavigation();
             CheckYtDlp();
             CheckTagEditor();
+            CheckRenameEditor();
             if (args is ["--check-ytdlp-tools", var yt, var ffmpeg]) CheckLocalYtDlp(yt, ffmpeg);
-            Console.WriteLine("PASS: menus/history, settings, import safety, podcast policies, navigation, yt-dlp, process cancellation, batch tags/artwork/undo, and Tag workspace.");
+            Console.WriteLine("PASS: menus/history, settings, import safety, podcasts, navigation, yt-dlp, batch tags, and Rename operations/rollback/scope/UI.");
             return 0;
         }
         catch (Exception ex)

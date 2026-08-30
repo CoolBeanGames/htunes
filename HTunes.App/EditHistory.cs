@@ -1,6 +1,6 @@
 namespace HTunes.App;
 
-/// <summary>Session-only, bounded history. Entries change local model state, never device/filesystem state.</summary>
+/// <summary>Session-only, bounded history. Tag/rename entries also restore local files; device operations are not recorded.</summary>
 internal sealed class EditHistory(int capacity = 100)
 {
     private sealed record Edit(string Description, Action Undo, Action Redo);

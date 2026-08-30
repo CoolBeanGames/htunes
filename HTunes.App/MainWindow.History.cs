@@ -24,7 +24,7 @@ public partial class MainWindow
         try
         {
             // Release any file currently held by playback before an undo that may rewrite its tags.
-            if (player.Source is not null && (redo ? editHistory.RedoDescription : editHistory.UndoDescription) == "Tag selected tracks")
+            if (player.Source is not null && (redo ? editHistory.RedoDescription : editHistory.UndoDescription) is "Tag selected tracks" or "Rename / filename titles")
             {
                 if (currentPodcastEpisode is null) { player.Stop(); player.Close(); }
             }

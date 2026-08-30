@@ -6,6 +6,7 @@ A Windows music library and iPod companion built with C# and WPF.
 
 - Browse by artist, album, genre, or song
 - Global **Tag** tab with a searchable spreadsheet, multi-track inspector, artwork upload/resize/removal, file-tag writing, and undo/redo
+- **Rename** tab with live before/after previews, chainable text rules, filename/title actions, collision checks, and undo/redo
 - Single-panel navigation: artists → albums → songs, albums/genres → songs, and podcast shows → episode pages, with Back buttons
 - Download audio from one URL per line with yt-dlp, live progress/output, cancellation, source-ID duplicate skipping, FFmpeg conversion, and automatic library import
 - Show source format and bitrate for library and iPod music
@@ -120,6 +121,24 @@ Use the left inspector to edit title, artist, album, genre, track number, disc n
 **Write tags to audio files** is enabled by default. Disable it for library-only edits, including edits to missing or read-only files. Explicit library tags are retained on restart instead of being refilled from stale file tags. Saving physical tags preflights the selection, preserves unchecked tags, keeps a temporary byte-for-byte recovery copy during each file write, and attempts rollback if any write or library save fails. Recovery errors are reported rather than silently ignored. Library JSON is replaced only after a complete temporary file has been written.
 
 Edit → Undo/Redo (Ctrl+Z / Ctrl+Y with the grid focused) restores this session's Tag edits in both the library and audio files when file writing was enabled. It does not rewind play counts. Managed artwork versions are kept for undo; physical file writes temporarily need free space for a copy of the largest edited audio file. Sync/download actions are held while a tag batch is saving. The Tag tab does not edit iPod database records or synchronize changes automatically.
+
+### Rename tab
+
+[View the Rename tab screenshot (sample library)](docs/screenshots/rename-editor.png).
+
+Rename works on the local music library. Choose **Selected tracks**, **All filtered tracks**, or **Entire library (including hidden tracks)**. Ctrl/Shift and Ctrl+A support subset selection; search filters by metadata or path. Entire-library application asks for confirmation and includes rows hidden by the search.
+
+Actions:
+
+- **Edit filenames:** check any combination of Replace text, Remove text, Trim front characters, Trim end characters, Prepend text, and Append text. Rules run in that order, top to bottom. Replacement/removal are literal, with an optional ignore-case switch. Trim counts apply to Unicode characters, not halves of a surrogate pair.
+- **Artist - Album - Track → filename:** starts from `Artist - Album - Track Title`, then applies the checked text rules. Windows-invalid characters in metadata become underscores.
+- **Filename → track title:** sets each track's title to its own filename without the final extension; files are not renamed and text rules are disabled. The checkbox controls writing the title into the audio file too, or updating only the library.
+
+Filename operations preserve the final extension **exactly**, including its case, and keep files in their current folders. Preview is read-only: nothing happens until **Apply**. Conflicts, reserved/invalid names, empty stems, missing files, and duplicate destinations block the batch instead of overwriting files. The service rechecks before executing. Case-only changes, overlapping names, and swaps use temporary names in the same folders. A recovery mapping is flushed to a temporary `htunes-rename-recovery-*.json` file before moves begin; it is removed after successful completion or rollback and retained when recovery needs attention. Interrupted-process journals support manual recovery, not automatic startup replay.
+
+Successful renames save library paths and matching original-import references, including other entries pointing to the same renamed file. Track IDs, playlists, artwork, listening counts, and source download IDs are preserved. Copying a filename into the title changes only that metadata field. Sync/download/tag operations cannot overlap an active rename batch.
+
+**Undo/Redo** reverses filename or title changes in the current session. Undo refuses to overwrite an unrelated file created at the old name. File-move or library-save failures trigger rollback; if recovery is incomplete, the error identifies remaining paths and the recovery mapping. Rename affects local files only, not device-only iPod tracks or podcast episode records.
 
 ### Download tab
 
