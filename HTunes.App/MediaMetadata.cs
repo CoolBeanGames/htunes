@@ -4,7 +4,7 @@ namespace HTunes.App;
 
 internal static class MediaMetadata
 {
-    public static void ReadInto(Track track, bool onlyMissing = false)
+    public static void ReadInto(Track track, bool onlyMissing = false, bool extractArtwork = true)
     {
         try
         {
@@ -17,7 +17,7 @@ internal static class MediaMetadata
             if (!onlyMissing || track.TrackNumber == 0) track.TrackNumber = checked((int)tag.Track);
             if (!onlyMissing || track.DiscNumber <= 1) track.DiscNumber = tag.Disc == 0 ? 1 : checked((int)tag.Disc);
             if (!onlyMissing || track.Year == 0) track.Year = checked((int)tag.Year);
-            if (track.ArtworkPath is null && tag.Pictures.Length > 0) track.ArtworkPath = SaveArtwork(track, tag.Pictures[0]);
+            if (extractArtwork && track.ArtworkPath is null && tag.Pictures.Length > 0) track.ArtworkPath = SaveArtwork(track, tag.Pictures[0]);
         }
         catch (Exception ex) when (ex is TagLib.UnsupportedFormatException or TagLib.CorruptFileException or IOException or UnauthorizedAccessException)
         {

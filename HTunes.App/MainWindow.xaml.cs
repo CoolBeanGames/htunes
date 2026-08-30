@@ -20,6 +20,11 @@ public partial class MainWindow : Window
     private Point dragStart;
     private string category = "Artist";
     private List<Track> allTracks = [];
+    private List<Track> ipodTracks = [];
+    private IPodDevice? currentDevice;
+    private bool isIPodView;
+    private bool isIPodLoading;
+    private CancellationTokenSource? ipodLoadCancellation;
 
     public ObservableCollection<Track> VisibleTracks { get; } = [];
     public ObservableCollection<Playlist> Playlists { get; } = [];
@@ -55,10 +60,19 @@ public partial class MainWindow : Window
     private void RefreshBrowser()
     {
         var search = SearchBox?.Text?.Trim() ?? "";
-        var source = allTracks.Where(t => MatchesSearch(t, search)).ToList();
+        var viewTracks = SourceTracks;
+        var source = viewTracks.Where(t => MatchesSearch(t, search)).ToList();
         PlaylistList.SelectedItem = null;
         PageTitle.Text = category switch { "Artist" => "Artists", "Album" => "Albums", "Genre" => "Genres", _ => "Songs" };
-        LibrarySummary.Text = $"{allTracks.Count} song{(allTracks.Count == 1 ? "" : "s")} in your library";
+        LibrarySummary.Text = isIPodView
+            ? isIPodLoading ? $"Loading music from {currentDevice?.Name ?? "iPod"}…" : $"{viewTracks.Count} song{(viewTracks.Count == 1 ? "" : "s")} on {currentDevice?.Name ?? "iPod"}"
+            : $"{viewTracks.Count} song{(viewTracks.Count == 1 ? "" : "s")} in your library";
+        PlaylistsHeading.Visibility = PlaylistList.Visibility = NewPlaylistButton.Visibility = isIPodView ? Visibility.Collapsed : Visibility.Visible;
+        PlaylistsHeadingRow.Height = NewPlaylistRow.Height = isIPodView ? new GridLength(0) : GridLength.Auto;
+        PlaylistsListRow.Height = isIPodView ? new GridLength(0) : new GridLength(150);
+        EditMetadataButton.Visibility = isIPodView ? Visibility.Collapsed : Visibility.Visible;
+        EmptyStateTitle.Text = isIPodView ? (isIPodLoading ? "Reading iPod music…" : "No music found on this iPod") : "Drop music here to add it";
+        EmptyStateDetail.Text = isIPodView ? "Music stored by the stock iPod OS appears here" : "or choose File → Add files to library";
         PrimaryPanel.Visibility = category == "Songs" ? Visibility.Collapsed : Visibility.Visible;
         PrimaryColumn.Width = category == "Songs" ? new GridLength(0) : new GridLength(240);
         SecondaryPanel.Visibility = category == "Artist" ? Visibility.Visible : Visibility.Collapsed;
@@ -75,6 +89,8 @@ public partial class MainWindow : Window
         SetVisibleTracks(category == "Songs" ? source : []);
     }
 
+    private List<Track> SourceTracks => isIPodView ? ipodTracks : allTracks;
+
     private void SetVisibleTracks(IEnumerable<Track> tracks)
     {
         VisibleTracks.Clear();
@@ -83,24 +99,31 @@ public partial class MainWindow : Window
     }
 
     private static bool MatchesSearch(Track t, string search) => string.IsNullOrEmpty(search) || new[] { t.Title, t.Artist, t.Album, t.Genre }.Any(v => v.Contains(search, StringComparison.OrdinalIgnoreCase));
+    private void TopTab_Checked(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded || sender is not RadioButton button) return;
+        isIPodView = button.Tag?.ToString() == "IPod";
+        RefreshBrowser();
+    }
     private void Category_Checked(object sender, RoutedEventArgs e) { if (!IsLoaded || sender is not RadioButton button) return; category = button.Tag?.ToString() ?? "Artist"; RefreshBrowser(); }
 
     private void PrimaryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (PrimaryList.SelectedItem is not string selected) return;
+        var viewTracks = SourceTracks;
         if (category == "Artist")
         {
             SecondaryHeading.Text = $"Albums by {selected}";
-            SecondaryList.ItemsSource = allTracks.Where(t => Same(t.Artist, selected)).Select(t => t.Album).Distinct(StringComparer.OrdinalIgnoreCase).Order().ToList();
-            SetVisibleTracks(allTracks.Where(t => Same(t.Artist, selected)));
+            SecondaryList.ItemsSource = viewTracks.Where(t => Same(t.Artist, selected)).Select(t => t.Album).Distinct(StringComparer.OrdinalIgnoreCase).Order().ToList();
+            SetVisibleTracks(viewTracks.Where(t => Same(t.Artist, selected)));
         }
-        else if (category == "Album") SetVisibleTracks(allTracks.Where(t => Same(t.Album, selected)));
-        else if (category == "Genre") SetVisibleTracks(allTracks.Where(t => Same(t.Genre, selected)));
+        else if (category == "Album") SetVisibleTracks(viewTracks.Where(t => Same(t.Album, selected)));
+        else if (category == "Genre") SetVisibleTracks(viewTracks.Where(t => Same(t.Genre, selected)));
     }
 
     private void SecondaryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (PrimaryList.SelectedItem is string artist && SecondaryList.SelectedItem is string album) SetVisibleTracks(allTracks.Where(t => Same(t.Artist, artist) && Same(t.Album, album)));
+        if (PrimaryList.SelectedItem is string artist && SecondaryList.SelectedItem is string album) SetVisibleTracks(SourceTracks.Where(t => Same(t.Artist, artist) && Same(t.Album, album)));
     }
 
     private static bool Same(string a, string b) => a.Equals(b, StringComparison.OrdinalIgnoreCase);
@@ -132,6 +155,7 @@ public partial class MainWindow : Window
     private List<Track> SelectedTracks() => TracksGrid.SelectedItems.Cast<Track>().ToList();
     private void EditMetadata_Click(object sender, RoutedEventArgs e)
     {
+        if (isIPodView) return;
         var selected = SelectedTracks();
         if (selected.Count == 0) { MessageBox.Show(this, "Select one or more songs first. Use Ctrl or Shift to select several.", "Edit metadata"); return; }
         if (new MetadataEditorWindow(selected) { Owner = this }.ShowDialog() == true) { SaveLibrary(); RefreshBrowser(); }
@@ -139,6 +163,7 @@ public partial class MainWindow : Window
 
     private void RemoveTracks_Click(object sender, RoutedEventArgs e)
     {
+        if (isIPodView) return;
         var selected = SelectedTracks();
         if (selected.Count == 0 || MessageBox.Show(this, $"Remove {selected.Count} selected song(s) from the library? The original files will not be deleted.", "Remove songs", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         allTracks.RemoveAll(selected.Contains);
@@ -183,18 +208,72 @@ public partial class MainWindow : Window
         var device = IPodDetector.FindConnected();
         if (device is null)
         {
+            var wasConnected = currentDevice is not null;
+            currentDevice = null;
+            ipodLoadCancellation?.Cancel();
+            ipodTracks = [];
+            isIPodLoading = false;
             DeviceIndicator.Fill = new SolidColorBrush(Color.FromRgb(146, 154, 167));
             DeviceNameText.Text = "No iPod connected";
             DeviceDetailsText.Text = "  •  Connect an iPod to view capacity and sync music";
-            SyncAllButton.IsEnabled = false;
+            SyncAllButton.IsEnabled = EjectButton.IsEnabled = false;
+            DeviceStatusArea.Cursor = Cursors.Arrow;
+            IPodTab.Visibility = Visibility.Collapsed;
             DeviceStrip.Tag = null;
+            if (wasConnected && isIPodView) MusicTab.IsChecked = true;
             return;
         }
+        var isNewDevice = currentDevice is null || !Same(currentDevice.RootPath, device.RootPath);
+        currentDevice = device;
         DeviceIndicator.Fill = new SolidColorBrush(Color.FromRgb(46, 160, 90));
         DeviceNameText.Text = device.Name;
-        DeviceDetailsText.Text = $"  •  {FormatBytes(device.Capacity)} capacity  •  {FormatBytes(device.FreeSpace)} free  •  Battery unavailable";
-        SyncAllButton.IsEnabled = true;
+        DeviceDetailsText.Text = $"  •  {FormatBytes(device.Capacity)} capacity  •  {FormatBytes(device.FreeSpace)} free";
+        SyncAllButton.IsEnabled = EjectButton.IsEnabled = true;
+        DeviceStatusArea.Cursor = Cursors.Hand;
+        IPodTab.Visibility = Visibility.Visible;
         DeviceStrip.Tag = device;
+        if (isNewDevice) _ = LoadIPodTracksAsync(device);
+    }
+
+    private async Task LoadIPodTracksAsync(IPodDevice device)
+    {
+        ipodLoadCancellation?.Cancel();
+        ipodLoadCancellation = new CancellationTokenSource();
+        var token = ipodLoadCancellation.Token;
+        isIPodLoading = true;
+        if (isIPodView) RefreshBrowser();
+        try
+        {
+            var tracks = await Task.Run(() =>
+            {
+                var result = new List<Track>();
+                var musicPath = Path.Combine(device.RootPath, "iPod_Control", "Music");
+                if (!Directory.Exists(musicPath)) return result;
+                foreach (var file in Directory.EnumerateFiles(musicPath, "*", SearchOption.AllDirectories))
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (!AudioExtensions.Contains(Path.GetExtension(file), StringComparer.OrdinalIgnoreCase)) continue;
+                    var track = new Track { FilePath = file, Title = Path.GetFileNameWithoutExtension(file) };
+                    MediaMetadata.ReadInto(track, extractArtwork: false);
+                    result.Add(track);
+                }
+                return result;
+            }, token);
+            if (currentDevice is not null && Same(currentDevice.RootPath, device.RootPath)) ipodTracks = tracks;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            ipodTracks = [];
+        }
+        finally
+        {
+            if (!token.IsCancellationRequested)
+            {
+                isIPodLoading = false;
+                if (isIPodView) RefreshBrowser();
+            }
+        }
     }
 
     private static string FormatBytes(long bytes)
@@ -210,6 +289,24 @@ public partial class MainWindow : Window
     {
         if (DeviceStrip.Tag is not IPodDevice || e.Data.GetData("hTunesTracks") is not Guid[] ids) return;
         MessageBox.Show(this, $"{ids.Length} song{(ids.Length == 1 ? "" : "s")} selected for this iPod. Actual iPod database syncing is the next device step.", "iPod detected");
+    }
+
+    private void DeviceStatusArea_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (currentDevice is not null) IPodTab.IsChecked = true;
+    }
+
+    private void Eject_Click(object sender, RoutedEventArgs e)
+    {
+        if (currentDevice is null) return;
+        player.Stop();
+        player.Close();
+        EjectButton.IsEnabled = SyncAllButton.IsEnabled = false;
+        if (!IPodEjector.TryEject(currentDevice.RootPath, out var error))
+        {
+            EjectButton.IsEnabled = SyncAllButton.IsEnabled = true;
+            MessageBox.Show(this, error, "Could not eject iPod", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
     private void Play_Click(object sender, RoutedEventArgs e) { if (player.Source is null) PlaySelected(); else player.Play(); }
     private void PlaySelected()
