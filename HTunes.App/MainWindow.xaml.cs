@@ -3,6 +3,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -17,6 +18,7 @@ public partial class MainWindow : Window
 {
     private static readonly string[] AudioExtensions = [".mp3", ".m4a", ".aac", ".wav", ".wma", ".flac", ".ogg"];
     private readonly string dataFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "hTunes", "library.json");
+    private readonly string preferencesFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "hTunes", "settings.json");
     private readonly MediaPlayer player = new();
     private readonly DispatcherTimer deviceTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private Point dragStart;
@@ -36,7 +38,7 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
-        InitializeComponent(); DataContext = this; LoadLibrary(); RefreshBrowser(); RefreshDevice();
+        InitializeComponent(); DataContext = this; LoadPreferences(); LoadLibrary(); RefreshBrowser(); RefreshDevice();
         player.MediaEnded += (_, _) => NextTrack();
         deviceTimer.Tick += (_, _) => RefreshDevice();
         playCountSyncTimer.Tick += async (_, _) => { playCountSyncTimer.Stop(); if (currentDevice is not null) await ReconcilePlayCountsAsync(currentDevice); };
@@ -61,6 +63,30 @@ public partial class MainWindow : Window
     {
         Directory.CreateDirectory(Path.GetDirectoryName(dataFile)!);
         File.WriteAllText(dataFile, JsonSerializer.Serialize(new LibraryData { Tracks = allTracks, Playlists = Playlists.ToList() }, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private void LoadPreferences()
+    {
+        try
+        {
+            if (!File.Exists(preferencesFile)) return;
+            var preferences = JsonSerializer.Deserialize<AppPreferences>(File.ReadAllText(preferencesFile));
+            if (preferences is not null && TranscodeComboBox.Items.Cast<ComboBoxItem>().Any(item => Same(item.Tag?.ToString() ?? "", preferences.TranscodePresetId)))
+                TranscodeComboBox.SelectedValue = preferences.TranscodePresetId;
+        }
+        catch { }
+    }
+
+    private void SavePreferences()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(preferencesFile)!);
+        var preferences = new AppPreferences { TranscodePresetId = TranscodeComboBox.SelectedValue as string ?? "original" };
+        File.WriteAllText(preferencesFile, JsonSerializer.Serialize(preferences, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private void TranscodeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (IsLoaded) SavePreferences();
     }
 
     private void RefreshBrowser()
@@ -98,9 +124,9 @@ public partial class MainWindow : Window
 
     private List<Track> SourceTracks => isIPodView ? ipodTracks : allTracks;
 
-    private void SetVisibleTracks(IEnumerable<Track> tracks)
+    private void SetVisibleTracks(IEnumerable<Track> tracks, bool preserveOrder = false)
     {
-        var ordered = tracks.OrderBy(t => t.DiscNumber).ThenBy(t => t.TrackNumber).ThenBy(t => t.Title).ToList();
+        var ordered = preserveOrder ? tracks.ToList() : tracks.OrderBy(t => t.DiscNumber).ThenBy(t => t.TrackNumber).ThenBy(t => t.Title).ToList();
         VisibleTracks.Clear();
         foreach (var track in ordered) VisibleTracks.Add(track);
         EmptyState.Visibility = VisibleTracks.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -223,7 +249,18 @@ public partial class MainWindow : Window
         if (PlaylistList.SelectedItem is not Playlist playlist) return;
         PageTitle.Text = playlist.Name; LibrarySummary.Text = $"{playlist.TrackIds.Count} song{(playlist.TrackIds.Count == 1 ? "" : "s")}";
         PrimaryPanel.Visibility = SecondaryPanel.Visibility = Visibility.Collapsed; PrimaryColumn.Width = SecondaryColumn.Width = new GridLength(0);
-        SetVisibleTracks(playlist.TrackIds.Select(id => allTracks.FirstOrDefault(t => t.Id == id)).Where(t => t is not null).Cast<Track>());
+        SetVisibleTracks(playlist.TrackIds.Select(id => allTracks.FirstOrDefault(t => t.Id == id)).Where(t => t is not null).Cast<Track>(), preserveOrder: true);
+    }
+
+    private void PlaylistList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e) => dragStart = e.GetPosition(null);
+
+    private void PlaylistList_MouseMove(object sender, MouseEventArgs e)
+    {
+        var position = e.GetPosition(null);
+        if (isIPodView || e.LeftButton != MouseButtonState.Pressed || PlaylistList.SelectedItem is not Playlist playlist ||
+            (Math.Abs(position.X - dragStart.X) < SystemParameters.MinimumHorizontalDragDistance &&
+             Math.Abs(position.Y - dragStart.Y) < SystemParameters.MinimumVerticalDragDistance)) return;
+        DragDrop.DoDragDrop(PlaylistList, new DataObject("hTunesPlaylist", playlist.Id), DragDropEffects.Copy);
     }
 
     private void TracksGrid_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -407,21 +444,26 @@ public partial class MainWindow : Window
         return $"{value:0.#} {units[unit]}";
     }
 
-    private void DeviceStrip_DragOver(object sender, DragEventArgs e) { e.Effects = DeviceStrip.Tag is IPodDevice && !isSyncing && e.Data.GetDataPresent("hTunesTracks") ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; }
+    private void DeviceStrip_DragOver(object sender, DragEventArgs e) { e.Effects = DeviceStrip.Tag is IPodDevice && !isSyncing && (e.Data.GetDataPresent("hTunesTracks") || e.Data.GetDataPresent("hTunesPlaylist")) ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; }
     private async void DeviceStrip_Drop(object sender, DragEventArgs e)
     {
-        if (DeviceStrip.Tag is not IPodDevice || e.Data.GetData("hTunesTracks") is not Guid[] ids) return;
-        await SyncTracksAsync(ids, randomFill: false);
+        if (DeviceStrip.Tag is not IPodDevice) return;
+        if (e.Data.GetData("hTunesPlaylist") is Guid playlistId && Playlists.FirstOrDefault(item => item.Id == playlistId) is Playlist playlist)
+        {
+            await SyncTracksAsync(playlist.TrackIds, randomFill: false, playlist);
+            return;
+        }
+        if (e.Data.GetData("hTunesTracks") is Guid[] ids) await SyncTracksAsync(ids, randomFill: false);
     }
 
     private async void SyncAll_Click(object sender, RoutedEventArgs e) => await SyncTracksAsync(allTracks.Select(t => t.Id), randomFill: true);
 
-    private async Task SyncTracksAsync(IEnumerable<Guid> ids, bool randomFill)
+    private async Task SyncTracksAsync(IEnumerable<Guid> ids, bool randomFill, Playlist? playlist = null)
     {
         if (isSyncing || isReconcilingPlayCounts || currentDevice is null) return;
         var requestedIds = ids.ToHashSet();
         var requested = allTracks.Where(t => requestedIds.Contains(t.Id)).ToList();
-        if (requested.Count == 0) { MessageBox.Show(this, "There are no library tracks in this selection.", "Nothing to sync"); return; }
+        if (requested.Count == 0 && playlist is null) { MessageBox.Show(this, "There are no library tracks in this selection.", "Nothing to sync"); return; }
         var device = currentDevice;
         var preset = TranscodePresets.Get(TranscodeComboBox.SelectedValue as string);
         isSyncing = true; deviceTimer.Stop();
@@ -432,7 +474,15 @@ public partial class MainWindow : Window
         {
             if (!await EnsureIPodPreparedAsync(device)) return;
             var progress = new Progress<SyncProgress>(p => DeviceDetailsText.Text = $"  •  {p.Message}  ({Math.Min(p.Completed + 1, p.Total)}/{p.Total})");
-            var result = await Task.Run(() => IPodSyncService.Sync(device.RootPath, requested, allTracks, randomFill, preset, progress));
+            var result = requested.Count == 0
+                ? new SyncResult(0, 0, 0, 0, 0, 0)
+                : await Task.Run(() => IPodSyncService.Sync(device.RootPath, requested, allTracks, randomFill, preset, progress));
+            IPodPlaylistSyncResult? playlistResult = null;
+            if (playlist is not null)
+            {
+                DeviceDetailsText.Text = $"  •  Updating playlist {playlist.Name}";
+                playlistResult = await Task.Run(() => IPodPlaylistSyncService.Sync(device.RootPath, playlist, allTracks));
+            }
             currentDevice = IPodDetector.FindConnected();
             if (currentDevice is not null)
             {
@@ -440,7 +490,8 @@ public partial class MainWindow : Window
                 await LoadIPodTracksAsync(currentDevice);
                 IPodTab.IsChecked = true;
             }
-            MessageBox.Show(this, result.Summary, "Sync complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            var summary = playlistResult is null ? result.Summary : $"{result.Summary}\n{playlistResult.Summary}";
+            MessageBox.Show(this, summary, "Sync complete", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
@@ -528,7 +579,7 @@ public partial class MainWindow : Window
         new DependencySetupWindow(tools) { Owner = this }.ShowDialog();
     }
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();
-    protected override void OnClosing(System.ComponentModel.CancelEventArgs e) { deviceTimer.Stop(); playCountSyncTimer.Stop(); SaveLibrary(); player.Close(); base.OnClosing(e); }
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e) { deviceTimer.Stop(); playCountSyncTimer.Stop(); SavePreferences(); SaveLibrary(); player.Close(); base.OnClosing(e); }
 }
 
 public sealed class Track
@@ -536,8 +587,11 @@ public sealed class Track
     public Guid Id { get; set; } = Guid.NewGuid(); public string FilePath { get; set; } = ""; public string Title { get; set; } = "Unknown title";
     public string Artist { get; set; } = "Unknown Artist"; public string Album { get; set; } = "Unknown Album"; public string Genre { get; set; } = "Unknown Genre";
     public int TrackNumber { get; set; } public int DiscNumber { get; set; } = 1; public int Year { get; set; } public int PlayCount { get; set; }
+    public string Format { get; set; } = ""; public int BitrateKbps { get; set; }
+    [JsonIgnore] public string BitrateDisplay => BitrateKbps > 0 ? $"{BitrateKbps} kbps" : "—";
     public string? ArtworkPath { get; set; } public DateTime DateAdded { get; set; }
     public Dictionary<string, int> SyncedPlayCounts { get; set; } = [];
 }
 public sealed class Playlist { public Guid Id { get; set; } = Guid.NewGuid(); public string Name { get; set; } = "New Playlist"; public List<Guid> TrackIds { get; set; } = []; }
 public sealed class LibraryData { public List<Track> Tracks { get; set; } = []; public List<Playlist> Playlists { get; set; } = []; }
+public sealed class AppPreferences { public string TranscodePresetId { get; set; } = "original"; }

@@ -17,6 +17,8 @@ internal static class MediaMetadata
             if (!onlyMissing || track.TrackNumber == 0) track.TrackNumber = checked((int)tag.Track);
             if (!onlyMissing || track.DiscNumber <= 1) track.DiscNumber = tag.Disc == 0 ? 1 : checked((int)tag.Disc);
             if (!onlyMissing || track.Year == 0) track.Year = checked((int)tag.Year);
+            if (!onlyMissing || track.BitrateKbps == 0) track.BitrateKbps = Math.Max(0, media.Properties.AudioBitrate);
+            if (!onlyMissing || string.IsNullOrWhiteSpace(track.Format)) track.Format = ReadFormat(media, track.FilePath);
             if (extractArtwork && (string.IsNullOrWhiteSpace(track.ArtworkPath) || !File.Exists(track.ArtworkPath)) && tag.Pictures.Length > 0)
                 track.ArtworkPath = SaveArtwork(track, tag.Pictures[0]);
         }
@@ -32,6 +34,15 @@ internal static class MediaMetadata
     {
         if (string.IsNullOrWhiteSpace(value)) return target;
         return !onlyMissing || string.IsNullOrWhiteSpace(target) || target == missingValue ? value.Trim() : target;
+    }
+
+    private static string ReadFormat(TagLib.File media, string path)
+    {
+        var descriptions = string.Join(" ", media.Properties.Codecs.Select(codec => codec.Description));
+        if (descriptions.Contains("Apple Lossless", StringComparison.OrdinalIgnoreCase) || descriptions.Contains("ALAC", StringComparison.OrdinalIgnoreCase)) return "ALAC";
+        if (descriptions.Contains("AAC", StringComparison.OrdinalIgnoreCase)) return "AAC";
+        if (descriptions.Contains("MPEG", StringComparison.OrdinalIgnoreCase) || Path.GetExtension(path).Equals(".mp3", StringComparison.OrdinalIgnoreCase)) return "MP3";
+        return Path.GetExtension(path).TrimStart('.').ToUpperInvariant() switch { "M4A" => "AAC", "OGG" => "Ogg Vorbis", var value => value };
     }
 
     private static string? SaveArtwork(Track track, TagLib.IPicture picture)
