@@ -11,7 +11,7 @@ public partial class MetadataEditorWindow : Window
     public MetadataEditorWindow(IReadOnlyList<Track> tracks)
     {
         InitializeComponent(); this.tracks = tracks; Heading.Text = tracks.Count == 1 ? tracks[0].Title : $"{tracks.Count} songs selected";
-        TitleBox.Text = Shared(t => t.Title); ArtistBox.Text = Shared(t => t.Artist); AlbumBox.Text = Shared(t => t.Album); GenreBox.Text = Shared(t => t.Genre);
+        TitleBox.Text = Shared(t => t.Title); ArtistBox.Text = Shared(t => t.Artist); AlbumArtistBox.Text = Shared(t => t.AlbumArtist); AlbumBox.Text = Shared(t => t.Album); GenreBox.Text = Shared(t => t.Genre);
         TrackBox.Text = Shared(t => t.TrackNumber.ToString()); DiscBox.Text = Shared(t => t.DiscNumber.ToString()); YearBox.Text = Shared(t => t.Year.ToString());
         artworkPath = tracks.Select(t => t.ArtworkPath).Distinct().Count() == 1 ? tracks[0].ArtworkPath : null; ShowArtwork();
     }
@@ -23,6 +23,7 @@ public partial class MetadataEditorWindow : Window
         foreach (var track in tracks)
         {
             if (!string.IsNullOrWhiteSpace(TitleBox.Text)) track.Title = TitleBox.Text.Trim(); if (!string.IsNullOrWhiteSpace(ArtistBox.Text)) track.Artist = ArtistBox.Text.Trim();
+            if (!string.IsNullOrWhiteSpace(AlbumArtistBox.Text)) track.AlbumArtist = AlbumArtistBox.Text.Trim();
             if (!string.IsNullOrWhiteSpace(AlbumBox.Text)) track.Album = AlbumBox.Text.Trim(); if (!string.IsNullOrWhiteSpace(GenreBox.Text)) track.Genre = GenreBox.Text.Trim();
             if (int.TryParse(TrackBox.Text, out var number)) track.TrackNumber = number; if (int.TryParse(DiscBox.Text, out var disc)) track.DiscNumber = disc; if (int.TryParse(YearBox.Text, out var year)) track.Year = year;
             if (artworkPath is not null) track.ArtworkPath = artworkPath;

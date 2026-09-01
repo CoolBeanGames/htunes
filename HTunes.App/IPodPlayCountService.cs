@@ -11,6 +11,17 @@ internal static class TrackIdentity
 {
     public static string Key(string title, string artist, string album, int trackNumber) =>
         $"{title.Trim()}\u001f{artist.Trim()}\u001f{album.Trim()}\u001f{Math.Max(0, trackNumber)}";
+    public static string Marker(Guid id) => "hTunes:" + id.ToString("D");
+    public static Guid? MarkerId(string? comment) => comment is not null && comment.StartsWith("hTunes:", StringComparison.OrdinalIgnoreCase) &&
+        Guid.TryParse(comment[7..].Trim(), out var id) ? id : null;
+    public static void RememberPrevious(Track track, string title, string artist, string album, int number)
+    {
+        var key = Key(title, artist, album, number);
+        track.PreviousMetadataIdentities ??= [];
+        track.PreviousMetadataIdentities.RemoveAll(value => value.Equals(key, StringComparison.OrdinalIgnoreCase));
+        track.PreviousMetadataIdentities.Insert(0, key);
+        if (track.PreviousMetadataIdentities.Count > 20) track.PreviousMetadataIdentities.RemoveRange(20, track.PreviousMetadataIdentities.Count - 20);
+    }
 }
 
 internal static class IPodPlayCountService
@@ -38,8 +49,11 @@ internal static class IPodPlayCountService
             ipod.AssertIsWritable();
             ipod.AcquireLock();
             var deviceId = DeviceId(ipod, rootPath);
+            var localById = library.ToDictionary(t => t.Id);
             var localByKey = library.GroupBy(t => TrackIdentity.Key(t.Title, t.Artist, t.Album, t.TrackNumber), StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+            var localByPreviousKey = library.SelectMany(t => (t.PreviousMetadataIdentities ?? []).Select(key => (Key: key, Track: t)))
+                .GroupBy(item => item.Key, StringComparer.OrdinalIgnoreCase).ToDictionary(group => group.Key, group => group.First().Track, StringComparer.OrdinalIgnoreCase);
             var updates = new List<PlayCountUpdate>();
             var ipodTracks = new List<Clickwheel.Parsers.iTunesDB.Track>();
             foreach (var item in ipod.Tracks) ipodTracks.Add(item);
@@ -66,7 +80,10 @@ internal static class IPodPlayCountService
                     SetBookmark(ipodTrack, position);
                 }
                 var key = TrackIdentity.Key(ipodTrack.Title, ipodTrack.Artist, ipodTrack.Album, checked((int)ipodTrack.TrackNumber));
-                if (!localByKey.TryGetValue(key, out var local)) continue;
+                Track? local = null;
+                if (TrackIdentity.MarkerId(ipodTrack.Comment) is Guid localId) localById.TryGetValue(localId, out local);
+                if (local is null && !localByKey.TryGetValue(key, out local)) localByPreviousKey.TryGetValue(key, out local);
+                if (local is null) continue;
                 var ipodCount = Math.Max(0, ipodTrack.PlayCount);
                 var localCount = Math.Max(0, local.PlayCount);
                 int combined;
@@ -157,7 +174,7 @@ internal static class IPodPlayCountService
         backups.Add((original, backup));
     }
 
-    private static string DeviceId(Clickwheel.IPod ipod, string rootPath)
+    internal static string DeviceId(Clickwheel.IPod ipod, string rootPath)
     {
         if (!string.IsNullOrWhiteSpace(ipod.DeviceInfo.FirewireId)) return "firewire:" + ipod.DeviceInfo.FirewireId;
         if (!string.IsNullOrWhiteSpace(ipod.DeviceInfo.SerialNumber)) return "serial:" + ipod.DeviceInfo.SerialNumber;

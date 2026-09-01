@@ -9,7 +9,7 @@ using System.Text.RegularExpressions;
 namespace HTunes.App;
 
 internal sealed record YtCompletedFile(string Path, string Identity, string Title);
-internal sealed record YtDownloadUpdate(string? Title = null, long? Index = null, long? Count = null, double? Percent = null, bool Processing = false, string? Log = null);
+internal sealed record YtDownloadUpdate(string? Title = null, long? Index = null, long? Count = null, double? Percent = null, bool Processing = false, string? Log = null, string? ArtworkUrl = null);
 internal sealed record YtLinkResult(int ExitCode, bool Aborted, IReadOnlyList<YtCompletedFile> Files);
 
 internal static class YtDlpDownloadService
@@ -41,6 +41,37 @@ internal static class YtDlpDownloadService
         return extractor.ToLowerInvariant() + " " + id;
     }
 
+    public static async Task<IReadOnlyList<string>> ExpandYouTubeMusicArtistAsync(string executable, string url, CancellationToken token)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !uri.Host.Equals("music.youtube.com", StringComparison.OrdinalIgnoreCase)) return [url];
+        var parts = uri.AbsolutePath.Trim('/').Split('/');
+        if (parts.Length < 2 || parts[0] is not ("channel" or "browse") || !parts[1].StartsWith("UC", StringComparison.Ordinal)) return [url];
+        var releasesUrl = $"https://www.youtube.com/channel/{parts[1]}/releases";
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8 };
+        foreach (var argument in new[] { "--no-plugin-dirs", "--flat-playlist", "--dump-single-json", "--playlist-end", "500", "--", releasesUrl }) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("yt-dlp could not inspect the artist page.");
+        var output = process.StandardOutput.ReadToEndAsync(token); var errors = process.StandardError.ReadToEndAsync(token);
+        await process.WaitForExitAsync(token); var json = await output; _ = await errors;
+        if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(json)) return [url];
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var links = new List<string>(); Collect(document.RootElement, links);
+            return links.Distinct(StringComparer.OrdinalIgnoreCase).ToList() is { Count: > 0 } albums ? albums : [url];
+        }
+        catch (JsonException) { return [url]; }
+
+        static void Collect(JsonElement item, ICollection<string> links)
+        {
+            if (item.ValueKind != JsonValueKind.Object) return;
+            if (item.TryGetProperty("entries", out var entries) && entries.ValueKind == JsonValueKind.Array)
+                foreach (var entry in entries.EnumerateArray()) Collect(entry, links);
+            var value = item.TryGetProperty("webpage_url", out var webpage) ? webpage.ToString() : item.TryGetProperty("url", out var direct) ? direct.ToString() : "";
+            if (Uri.TryCreate(value, UriKind.Absolute, out var parsed) && parsed.Host.Contains("youtube.com", StringComparison.OrdinalIgnoreCase) &&
+                (parsed.AbsolutePath.Equals("/playlist", StringComparison.OrdinalIgnoreCase) || parsed.Query.Contains("list=", StringComparison.OrdinalIgnoreCase))) links.Add(value);
+        }
+    }
+
     public static IEnumerable<string> LibraryArchive(IEnumerable<Track> tracks)
     {
         foreach (var track in tracks.Where(track => File.Exists(track.FilePath)))
@@ -66,7 +97,7 @@ internal static class YtDlpDownloadService
         };
         foreach (var arg in YtDlpSettings.BuildArguments(settings)) start.ArgumentList.Add(arg);
         if (temporaryDirectory is not null) { start.ArgumentList.Add("--paths"); start.ArgumentList.Add("temp:" + temporaryDirectory); }
-        const string details = "\"title\":%(title)j,\"index\":%(playlist_index|1)j,\"count\":%(playlist_count,n_entries|null)j,\"playlist\":%(playlist_id,playlist|null)j";
+        const string details = "\"title\":%(title)j,\"index\":%(playlist_index|1)j,\"count\":%(playlist_count,n_entries|null)j,\"playlist\":%(playlist_id,playlist|null)j,\"artwork\":%(thumbnail|null)j";
         foreach (var arg in new[] {
             "--no-plugin-dirs", "--no-exec", "--no-simulate", "--no-quiet", "--newline", "--progress", "--color", "no_color", "--encoding", "utf-8", "--output-na-placeholder", "null",
             "--format", "bestaudio/best", "--ffmpeg-location", ffmpeg, "--js-runtimes", "node", "--download-archive", archive,
@@ -167,6 +198,7 @@ internal static class YtDlpDownloadService
             var title = Read("title");
             var index = Number("index");
             var count = Number("count");
+            var artwork = Read("artwork");
             // A standalone video has no playlist count. Unknown playlist totals remain unknown.
             if (count is null && index == 1 && Read("playlist") is "" or "NA" or "null") count = 1;
             var total = Number("total");
@@ -179,11 +211,11 @@ internal static class YtDlpDownloadService
                     update = new(Log: "[hTunes] Ignored an invalid or unfinished output path."); return true;
                 }
                 file = new(path, Identity(Read("extractor"), Read("id")), title);
-                update = new(title, index, count, 100, Log: $"[hTunes] Audio ready: {Path.GetFileName(path)}");
+                update = new(title, index, count, 100, Log: $"[hTunes] Audio ready: {Path.GetFileName(path)}", ArtworkUrl: artwork);
             }
             else if (kind == "playlist") update = new(Count: count);
             else if (kind is "track" or "progress" or "processing")
-                update = new(title, index, count, percent, kind == "processing", kind == "track" ? $"[hTunes] Track: {title}" : null);
+                update = new(title, index, count, percent, kind == "processing", kind == "track" ? $"[hTunes] Track: {title}" : null, artwork);
             else return false;
             return true;
         }

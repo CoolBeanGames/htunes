@@ -12,6 +12,7 @@ internal static class MediaMetadata
             var tag = media.Tag;
             track.Title = Value(track.Title, tag.Title, "Unknown title", onlyMissing);
             track.Artist = Value(track.Artist, First(tag.FirstPerformer, tag.FirstAlbumArtist), "Unknown Artist", onlyMissing);
+            track.AlbumArtist = Value(track.AlbumArtist, tag.FirstAlbumArtist, "", onlyMissing);
             track.Album = Value(track.Album, tag.Album, "Unknown Album", onlyMissing);
             track.Genre = Value(track.Genre, tag.FirstGenre, "Unknown Genre", onlyMissing);
             if (!onlyMissing || track.TrackNumber == 0) track.TrackNumber = checked((int)tag.Track);

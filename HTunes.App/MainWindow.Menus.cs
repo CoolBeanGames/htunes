@@ -167,6 +167,9 @@ public partial class MainWindow
         AddMenuAction(menu, "Stop", () => Stop_Click(this, new RoutedEventArgs()), player.Source is not null);
         AddMenuAction(menu, "Previous", () => Previous_Click(this, new RoutedEventArgs()), !isPodcastView && VisibleTracks.Count > 0);
         AddMenuAction(menu, "Next", () => Next_Click(this, new RoutedEventArgs()), !isPodcastView && VisibleTracks.Count > 0);
+        menu.Items.Add(new Separator());
+        AddMenuAction(menu, "Repeat current track", () => repeatPlayback = !repeatPlayback).IsChecked = repeatPlayback;
+        AddMenuAction(menu, "Shuffle", () => shufflePlayback = !shufflePlayback).IsChecked = shufflePlayback;
     }
 
     private void SelectBrowserCategory(string tag)

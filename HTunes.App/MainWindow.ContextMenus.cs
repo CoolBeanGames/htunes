@@ -10,15 +10,16 @@ namespace HTunes.App;
 public partial class MainWindow
 {
     private bool contextActionRunning;
-    private bool ContextActionsAvailable => !isRenaming && !isTagSaving && !isYtDownloading && !contextActionRunning && !isSyncing && !isReconcilingPlayCounts && !autoSyncRunning && activePodcastDownloads == 0 && podcastFeedOperations == 0;
+    private bool ContextActionsAvailable => !isRenaming && !isTagSaving && !contextActionRunning && !isSyncing && !isReconcilingPlayCounts && !autoSyncRunning;
 
     private void UpdateBusyWorkspaces()
     {
-        MusicWorkspace.IsEnabled = PodcastWorkspace.IsEnabled = TagWorkspace.IsEnabled = RenameWorkspace.IsEnabled = ContextActionsAvailable;
+        // Long-running downloads and syncs must never freeze browsing or tab switching.
+        MusicWorkspace.IsEnabled = PodcastWorkspace.IsEnabled = TagWorkspace.IsEnabled = RenameWorkspace.IsEnabled = true;
         UpdateDownloadControls();
         UpdateTagControls();
         UpdateRenameControls();
-        if (isTagSaving || isRenaming) SyncAllButton.IsEnabled = EjectButton.IsEnabled = false;
+        if (isTagSaving || isRenaming) SyncCurrentButton.IsEnabled = SyncAllButton.IsEnabled = EjectButton.IsEnabled = false;
     }
 
     private void InitializeContextMenus()
@@ -118,7 +119,7 @@ public partial class MainWindow
 
     private List<Track> ContextCategoryTracks(bool secondary)
     {
-        var selected = (secondary ? SecondaryList : PrimaryList).SelectedItems.Cast<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var selected = (secondary ? SecondaryList : PrimaryList).SelectedItems.Cast<BrowseItem>().Select(item => item.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         return SourceTracks.Where(track => (!isIPodView || track.IsPodcast == (category == "Podcast")) &&
             (secondary ? string.Equals(musicBrowse.Group, track.Artist, StringComparison.OrdinalIgnoreCase) && selected.Contains(track.Album) : category switch
             {

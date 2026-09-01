@@ -53,6 +53,14 @@ public partial class MainWindow
         try
         {
             SettingsStore.Validate(settings);
+            var expanded = new List<string>();
+            foreach (var link in links)
+            {
+                var artistLinks = await YtDlpDownloadService.ExpandYouTubeMusicArtistAsync(yt!, link, token);
+                expanded.AddRange(artistLinks);
+                if (artistLinks.Count > 1) AppendDownloadConsole($"[hTunes] Artist page expanded to {artistLinks.Count} album links.");
+            }
+            links = expanded.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             workingDirectory = Directory.CreateTempSubdirectory("htunes-ytdlp-").FullName;
             var archive = Path.Combine(workingDirectory, "library-archive.txt");
             for (var i = 0; i < links.Count; i++)
@@ -73,6 +81,11 @@ public partial class MainWindow
                     if (!isYtDownloading || i != linkIndex) return;
                     if (update.Log is not null) AppendDownloadConsole(update.Log);
                     if (!string.IsNullOrWhiteSpace(update.Title)) DownloadTrackTitle.Text = update.Title;
+                    if (Uri.TryCreate(update.ArtworkUrl, UriKind.Absolute, out var artworkUri))
+                    {
+                        try { DownloadArtworkImage.Source = new System.Windows.Media.Imaging.BitmapImage(artworkUri); DownloadArtworkPlaceholder.Visibility = Visibility.Collapsed; }
+                        catch { DownloadArtworkImage.Source = null; DownloadArtworkPlaceholder.Visibility = Visibility.Visible; }
+                    }
                     currentIndex = update.Index ?? currentIndex;
                     totalTracks = update.Count ?? totalTracks;
                     DownloadTrackProgress.Text = $"Track {currentIndex?.ToString() ?? "—"} of {totalTracks?.ToString() ?? "—"} in this link";
@@ -135,10 +148,11 @@ public partial class MainWindow
                 try { SaveLibrary(); } catch { existing.DownloadIdentity = previous; throw; }
                 AppendDownloadConsole("[hTunes] Already in library: " + file.Title); return;
             }
-            var imported = await Task.Run(() => ImportFileService.Prepare(file.Path, settings));
-            var track = new Track { FilePath = imported.LibraryPath, OriginalImportPath = file.Path, DownloadIdentity = file.Identity,
-                Title = string.IsNullOrWhiteSpace(file.Title) ? Path.GetFileNameWithoutExtension(file.Path) : file.Title, DateAdded = DateTime.Now };
+            var track = new Track { FilePath = file.Path, OriginalImportPath = file.Path, DownloadIdentity = file.Identity,
+                Title = string.IsNullOrWhiteSpace(file.Title) ? Path.GetFileNameWithoutExtension(file.Path) : file.Title, DateAdded = DateTime.Now, IsNew = true };
             await Task.Run(() => MediaMetadata.ReadInto(track));
+            var imported = await Task.Run(() => ImportFileService.Prepare(file.Path, settings, track.Artist, track.AlbumArtist, track.Album));
+            track.FilePath = imported.LibraryPath;
             var before = allTracks.ToList();
             allTracks.Add(track);
             try { SaveLibrary(); } catch { allTracks.Remove(track); throw; }
@@ -163,13 +177,19 @@ public partial class MainWindow
         ytDownloadCancellation?.Cancel();
     }
 
+    private void ClearDownloadLinks_Click(object sender, RoutedEventArgs e) => DownloadLinksBox.Clear();
+
+    private void ClearTextButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { TemplatedParent: TextBox box } && !box.IsReadOnly) box.Clear();
+    }
+
     internal void UpdateDownloadControls()
     {
         DownloadStartButton.IsEnabled = !StartupCheckInProgress && !isYtDownloading && ContextActionsAvailable;
         DownloadSettingsButton.IsEnabled = ContextActionsAvailable;
         DownloadLinksBox.IsReadOnly = isYtDownloading;
         DownloadAbortButton.IsEnabled = isYtDownloading && ytDownloadCancellation?.IsCancellationRequested == false;
-        if (isYtDownloading) SyncAllButton.IsEnabled = EjectButton.IsEnabled = false;
     }
 
     private void AppendDownloadConsole(string line)

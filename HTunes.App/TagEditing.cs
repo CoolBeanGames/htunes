@@ -5,14 +5,14 @@ using System.Windows.Media.Imaging;
 namespace HTunes.App;
 
 internal sealed record TagPatch(IReadOnlyDictionary<string, string> Fields, bool ChangeArtwork = false, string? Artwork = null,
-    bool ResizeArtwork = false, int Width = 600, int Height = 600)
+    bool ResizeArtwork = false, int Width = 600, int Height = 600, bool MarkAutoTagged = false)
 {
-    public bool HasChanges => Fields.Count > 0 || ChangeArtwork || ResizeArtwork;
+    public bool HasChanges => Fields.Count > 0 || ChangeArtwork || ResizeArtwork || MarkAutoTagged;
     public void Validate()
     {
         foreach (var (key, value) in Fields)
         {
-            if (key is not ("Title" or "Artist" or "Album" or "Genre" or "TrackNumber" or "DiscNumber" or "Year")) throw new ArgumentException("Unknown tag field.");
+            if (key is not ("Title" or "Artist" or "AlbumArtist" or "Album" or "Genre" or "TrackNumber" or "DiscNumber" or "Year")) throw new ArgumentException("Unknown tag field.");
             if (key is "TrackNumber" or "DiscNumber" or "Year" && (!int.TryParse(value, out var number) || number < 0 || number > (key == "Year" ? 9999 : 65535)))
                 throw new ArgumentException(key + " must be a whole number from 0 to " + (key == "Year" ? "9999." : "65535."));
         }
@@ -49,9 +49,9 @@ internal static class TagArtwork
 // A batch remembers only the edited fields. Undo never rewinds play counts or unrelated metadata.
 internal sealed class TagBatchEdit
 {
-    private sealed record Values(string Title, string Artist, string Album, string Genre, int Number, int Disc, int Year, string? Artwork, bool Managed)
+    private sealed record Values(string Title, string Artist, string AlbumArtist, string Album, string Genre, int Number, int Disc, int Year, string? Artwork, bool Managed, bool IsNew, bool AutoTagged, List<string> Previous)
     {
-        public static Values Read(Track t) => new(t.Title, t.Artist, t.Album, t.Genre, t.TrackNumber, t.DiscNumber, t.Year, t.ArtworkPath, t.MetadataManagedByLibrary);
+        public static Values Read(Track t) => new(t.Title, t.Artist, t.AlbumArtist, t.Album, t.Genre, t.TrackNumber, t.DiscNumber, t.Year, t.ArtworkPath, t.MetadataManagedByLibrary, t.IsNew, t.AutoTagged, (t.PreviousMetadataIdentities ?? []).ToList());
         public Values Change(TagPatch patch, string artworkDirectory)
         {
             string Text(string field, string fallback) => patch.Fields.TryGetValue(field, out var value) ? value.Trim() : fallback;
@@ -59,13 +59,23 @@ internal sealed class TagBatchEdit
             var art = patch.ChangeArtwork ? patch.Artwork : Artwork;
             if (art is not null && (patch.ChangeArtwork || patch.ResizeArtwork))
                 art = TagArtwork.Prepare(art, artworkDirectory, patch.ResizeArtwork ? patch.Width : null, patch.ResizeArtwork ? patch.Height : null);
-            return new(Text("Title", Title), Text("Artist", Artist), Text("Album", Album), Text("Genre", Genre), NumberValue("TrackNumber", Number), NumberValue("DiscNumber", Disc), NumberValue("Year", Year), art, true);
+            var next = new Values(Text("Title", Title), Text("Artist", Artist), Text("AlbumArtist", AlbumArtist), Text("Album", Album), Text("Genre", Genre), NumberValue("TrackNumber", Number), NumberValue("DiscNumber", Disc), NumberValue("Year", Year), art, true, false, AutoTagged || patch.MarkAutoTagged, Previous.ToList());
+            if (TrackIdentity.Key(next.Title, next.Artist, next.Album, next.Number) != TrackIdentity.Key(Title, Artist, Album, Number))
+            {
+                var old = TrackIdentity.Key(Title, Artist, Album, Number); next.Previous.RemoveAll(value => value.Equals(old, StringComparison.OrdinalIgnoreCase)); next.Previous.Insert(0, old);
+                if (next.Previous.Count > 20) next.Previous.RemoveRange(20, next.Previous.Count - 20);
+            }
+            return next;
         }
         public void Apply(Track t, TagPatch patch)
         {
             t.MetadataManagedByLibrary = Managed;
+            t.IsNew = IsNew;
+            t.AutoTagged = AutoTagged;
+            t.PreviousMetadataIdentities = Previous.ToList();
             if (patch.Fields.ContainsKey("Title")) t.Title = Title;
             if (patch.Fields.ContainsKey("Artist")) t.Artist = Artist;
+            if (patch.Fields.ContainsKey("AlbumArtist")) t.AlbumArtist = AlbumArtist;
             if (patch.Fields.ContainsKey("Album")) t.Album = Album;
             if (patch.Fields.ContainsKey("Genre")) t.Genre = Genre;
             if (patch.Fields.ContainsKey("TrackNumber")) t.TrackNumber = Number;
@@ -75,15 +85,16 @@ internal sealed class TagBatchEdit
         }
     }
 
-    private sealed record FileTags(string? Title, string[] Artists, string? Album, string[] Genres, uint Number, uint Disc, uint Year, TagLib.IPicture[] Pictures)
+    private sealed record FileTags(string? Title, string[] Artists, string[] AlbumArtists, string? Album, string[] Genres, uint Number, uint Disc, uint Year, TagLib.IPicture[] Pictures)
     {
         public static FileTags Read(string path)
         {
             using var file = TagLib.File.Create(path); var t = file.Tag;
-            return new(t.Title, t.Performers.ToArray(), t.Album, t.Genres.ToArray(), t.Track, t.Disc, t.Year,
+            return new(t.Title, t.Performers.ToArray(), t.AlbumArtists.ToArray(), t.Album, t.Genres.ToArray(), t.Track, t.Disc, t.Year,
                 t.Pictures.Select(p => (TagLib.IPicture)new TagLib.Picture(new TagLib.ByteVector(p.Data.Data.ToArray())) { MimeType = p.MimeType, Type = p.Type, Description = p.Description }).ToArray());
         }
         public FileTags Change(Values v, TagPatch patch) => new(v.Title, patch.Fields.ContainsKey("Artist") ? (v.Artist.Length == 0 ? [] : [v.Artist]) : Artists,
+            patch.Fields.ContainsKey("AlbumArtist") ? (v.AlbumArtist.Length == 0 ? [] : [v.AlbumArtist]) : AlbumArtists,
             v.Album, patch.Fields.ContainsKey("Genre") ? (v.Genre.Length == 0 ? [] : [v.Genre]) : Genres, (uint)v.Number, (uint)v.Disc, (uint)v.Year,
             patch.ChangeArtwork || patch.ResizeArtwork ? (v.Artwork is null ? [] : [new TagLib.Picture(v.Artwork) { Type = TagLib.PictureType.FrontCover }]) : Pictures);
 
@@ -98,6 +109,7 @@ internal sealed class TagBatchEdit
                 using var file = TagLib.File.Create(path); var t = file.Tag;
                 if (patch.Fields.ContainsKey("Title")) t.Title = Title;
                 if (patch.Fields.ContainsKey("Artist")) t.Performers = Artists;
+                if (patch.Fields.ContainsKey("AlbumArtist")) t.AlbumArtists = AlbumArtists;
                 if (patch.Fields.ContainsKey("Album")) t.Album = Album;
                 if (patch.Fields.ContainsKey("Genre")) t.Genres = Genres;
                 if (patch.Fields.ContainsKey("TrackNumber")) t.Track = Number;

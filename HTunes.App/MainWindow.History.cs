@@ -44,13 +44,16 @@ public partial class MainWindow
         CommandManager.InvalidateRequerySuggested();
     }
 
-    private sealed record TrackMetadata(string Title, string Artist, string Album, string Genre, int Number, int Disc, int Year, string? Artwork)
+    private sealed record TrackMetadata(string Title, string Artist, string AlbumArtist, string Album, string Genre, int Number, int Disc, int Year, string? Artwork, bool Managed, bool IsNew, List<string> Previous)
     {
-        public static TrackMetadata Read(Track track) => new(track.Title, track.Artist, track.Album, track.Genre, track.TrackNumber, track.DiscNumber, track.Year, track.ArtworkPath);
+        public static TrackMetadata Read(Track track) => new(track.Title, track.Artist, track.AlbumArtist, track.Album, track.Genre, track.TrackNumber, track.DiscNumber, track.Year, track.ArtworkPath, track.MetadataManagedByLibrary, track.IsNew, (track.PreviousMetadataIdentities ?? []).ToList());
+        public bool SameAs(TrackMetadata other) => Title == other.Title && Artist == other.Artist && AlbumArtist == other.AlbumArtist && Album == other.Album && Genre == other.Genre &&
+            Number == other.Number && Disc == other.Disc && Year == other.Year && Artwork == other.Artwork && Managed == other.Managed && IsNew == other.IsNew && Previous.SequenceEqual(other.Previous);
         public void Apply(Track track)
         {
-            track.Title = Title; track.Artist = Artist; track.Album = Album; track.Genre = Genre;
+            track.Title = Title; track.Artist = Artist; track.AlbumArtist = AlbumArtist; track.Album = Album; track.Genre = Genre;
             track.TrackNumber = Number; track.DiscNumber = Disc; track.Year = Year; track.ArtworkPath = Artwork;
+            track.MetadataManagedByLibrary = Managed; track.IsNew = IsNew; track.PreviousMetadataIdentities = Previous.ToList();
         }
     }
 
@@ -59,8 +62,16 @@ public partial class MainWindow
         if (tracks.Count == 0) return;
         var before = tracks.ToDictionary(track => track, TrackMetadata.Read);
         if (new MetadataEditorWindow(tracks) { Owner = this }.ShowDialog() != true) return;
+        var changed = tracks.Where(track => !before[track].SameAs(TrackMetadata.Read(track))).ToList();
+        foreach (var track in changed)
+        {
+            var old = before[track];
+            if (TrackIdentity.Key(old.Title, old.Artist, old.Album, old.Number) != TrackIdentity.Key(track.Title, track.Artist, track.Album, track.TrackNumber))
+                TrackIdentity.RememberPrevious(track, old.Title, old.Artist, old.Album, old.Number);
+            track.MetadataManagedByLibrary = true;
+            track.IsNew = false;
+        }
         var after = tracks.ToDictionary(track => track, TrackMetadata.Read);
-        var changed = tracks.Where(track => before[track] != after[track]).ToList();
         if (changed.Count > 0)
             RecordEdit("Edit metadata / artwork", () => changed.ForEach(track => before[track].Apply(track)), () => changed.ForEach(track => after[track].Apply(track)));
         SaveLibrary(); RefreshBrowser();

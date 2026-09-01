@@ -59,6 +59,7 @@ internal static class PodcastService
             .GroupBy(episode => episode.EnclosureUrl, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
         var refreshed = new List<PodcastEpisode>();
+        var feedOrder = 0;
         foreach (var item in document.Descendants().Where(element => element.Name.LocalName is "item" or "entry"))
         {
             var enclosure = Enclosure(item);
@@ -71,6 +72,7 @@ internal static class PodcastService
             episode.EpisodeNumber = ChildValue(item, "episode") ?? episode.EpisodeNumber;
             episode.PublishedUtc = ParseDate(ChildValue(item, "pubDate", "published", "updated"), episode.PublishedUtc);
             episode.DurationMs = ParseDuration(ChildValue(item, "duration"), episode.DurationMs);
+            episode.FeedOrder = feedOrder++;
             episode.EnclosureUrl = enclosure.Url;
             episode.MimeType = enclosure.Type;
             episode.EnclosureLength = enclosure.Length;
@@ -83,7 +85,7 @@ internal static class PodcastService
         refreshed.AddRange(show.Episodes.Where(episode =>
             !refreshedIds.Contains(episode.Id) &&
             (string.IsNullOrWhiteSpace(episode.EnclosureUrl) || !refreshedUrls.Contains(episode.EnclosureUrl))));
-        show.Episodes = refreshed.OrderByDescending(episode => episode.PublishedUtc).ToList();
+        show.Episodes = refreshed;
         show.LastRefreshedUtc = DateTime.UtcNow;
         DebugLog.Write("Podcast", $"Refreshed show {show.Id}; episodes={show.Episodes.Count}");
         if (!string.IsNullOrWhiteSpace(show.ArtworkUrl)) show.ArtworkPath = await DownloadArtworkAsync(show, cancellationToken) ?? show.ArtworkPath;
@@ -94,9 +96,7 @@ internal static class PodcastService
     internal static IReadOnlyList<PodcastEpisode> EpisodesForSync(PodcastShow show, bool includeDownloaded)
     {
         var unplayed = show.Episodes.Where(episode => !episode.IsPlayed).ToList();
-        var ordered = show.SyncOrder.Equals("Oldest", StringComparison.OrdinalIgnoreCase)
-            ? unplayed.OrderBy(episode => episode.PublishedUtc)
-            : unplayed.OrderByDescending(episode => episode.PublishedUtc);
+        var ordered = PodcastEpisodeOrdering.Order(unplayed, show.SyncOrder.Equals("Oldest", StringComparison.OrdinalIgnoreCase));
 
         // The per-show count controls automatic downloads. A manual download is an explicit request
         // to keep/sync that episode too, even when it falls outside the automatic newest/oldest set.

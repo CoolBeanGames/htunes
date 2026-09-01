@@ -36,12 +36,16 @@ internal static class IPodPlaylistSyncService
             var ipodTracks = trackList
                 .GroupBy(track => TrackIdentity.Key(track.Title, track.Artist, track.Album, checked((int)track.TrackNumber)), StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+            var ipodTracksByLocalId = trackList.Where(track => TrackIdentity.MarkerId(track.Comment) is not null)
+                .GroupBy(track => TrackIdentity.MarkerId(track.Comment)!.Value).ToDictionary(group => group.Key, group => group.First());
             var added = 0;
             var missing = 0;
             foreach (var id in source.TrackIds)
             {
                 var local = library.FirstOrDefault(track => track.Id == id);
-                if (local is null || !ipodTracks.TryGetValue(TrackIdentity.Key(local.Title, local.Artist, local.Album, local.TrackNumber), out var ipodTrack))
+                IPodTrack? ipodTrack = null;
+                if (local is not null) ipodTracksByLocalId.TryGetValue(local.Id, out ipodTrack);
+                if (local is null || (ipodTrack is null && !ipodTracks.TryGetValue(TrackIdentity.Key(local.Title, local.Artist, local.Album, local.TrackNumber), out ipodTrack)))
                 {
                     missing++;
                     continue;

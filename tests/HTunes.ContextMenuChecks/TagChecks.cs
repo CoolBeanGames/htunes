@@ -90,7 +90,7 @@ internal static partial class Program
             Require(fields["Genre"].Check.IsChecked == true && fields["Title"].Check.IsChecked == false && Control<Button>("TagApplyButton").IsEnabled, "Typing a field must check only that field.");
             Call("RefreshTagLibrary"); Require(fields["Genre"].Box.Text == "Alternative Rock" && fields["Genre"].Check.IsChecked == true, "Revisiting the tab must preserve an unsaved draft for the same selection.");
             Set("isYtDownloading", true); Call("UpdateBusyWorkspaces");
-            Require(!Control<FrameworkElement>("TagWorkspace").IsEnabled && !Control<Button>("TagApplyButton").IsEnabled, "Download activity must prevent concurrent tagging.");
+            Require(Control<FrameworkElement>("TagWorkspace").IsEnabled && Control<Button>("TagApplyButton").IsEnabled, "A background download must not freeze tagging or navigation.");
             Set("isYtDownloading", false); Call("UpdateBusyWorkspaces");
             Control<CheckBox>("TagResizeArtwork").IsChecked = true;
             Call("UpdateDeviceStripMode");

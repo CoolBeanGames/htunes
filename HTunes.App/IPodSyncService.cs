@@ -2,6 +2,8 @@ using Clickwheel;
 using Clickwheel.Exceptions;
 using Clickwheel.Parsers.iTunesDB;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using IPodPlaylist = Clickwheel.Parsers.iTunesDB.Playlist;
 using IPodTrack = Clickwheel.Parsers.iTunesDB.Track;
 
@@ -16,13 +18,13 @@ internal sealed record SyncResult(int Added, int Replaced, int AlreadyPresent, i
 
 internal static class IPodSyncService
 {
-    private sealed record SyncCandidate(Track Source, IPodTrack? Existing);
+    private sealed record SyncCandidate(Track Source, IPodTrack? Existing, string Fingerprint);
     private sealed record ReplacedMedia(string OriginalPath, string BackupPath);
     private sealed record PlaylistMembership(IPodPlaylist Playlist, int Position);
     private static readonly string[] SupportedExtensions = [".mp3", ".m4a", ".aac", ".wav", ".m4b", ".aa"];
     private const long SpaceReserve = 20L * 1024 * 1024;
 
-    public static SyncResult Sync(string rootPath, IReadOnlyCollection<Track> requested, IReadOnlyCollection<Track> library, bool randomFill, TranscodePreset preset, IProgress<SyncProgress>? progress = null)
+    public static SyncResult Sync(string rootPath, IReadOnlyCollection<Track> requested, IReadOnlyCollection<Track> library, bool randomFill, TranscodePreset preset, IProgress<SyncProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         var unique = requested.DistinctBy(t => t.Id).ToList();
         var missing = unique.Count(t => !File.Exists(t.FilePath));
@@ -33,30 +35,70 @@ internal static class IPodSyncService
         var ffmpeg = preset.IsOriginal ? null : FFmpegTranscoder.FindExecutable();
         var ipod = IPod.GetiPodByDrive(rootPath, IPodLoadAction.NoSync);
         ipod.AssertIsWritable();
+        var deviceId = IPodPlayCountService.DeviceId(ipod, rootPath);
 
         var ipodTrackList = new List<IPodTrack>();
         foreach (var track in ipod.Tracks) ipodTrackList.Add(track);
         var existingByKey = ipodTrackList
             .GroupBy(t => TrackIdentity.Key(t.Title, t.Artist, t.Album, checked((int)t.TrackNumber)), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var existingByMarker = ipodTrackList.Where(track => TrackIdentity.MarkerId(track.Comment) is not null)
+            .GroupBy(track => TrackIdentity.MarkerId(track.Comment)!.Value).ToDictionary(group => group.Key, group => group.First());
         var candidates = new List<SyncCandidate>();
+        var current = new List<(Track Source, string Fingerprint)>();
+        var claimed = new HashSet<int>();
+        var databaseDirty = false;
         var alreadyPresent = 0;
         foreach (var source in eligible)
         {
-            existingByKey.TryGetValue(TrackIdentity.Key(source.Title, source.Artist, source.Album, source.TrackNumber), out var existing);
-            if (existing is null || NeedsReplacement(rootPath, existing, source, preset)) candidates.Add(new SyncCandidate(source, existing));
-            else alreadyPresent++;
+            cancellationToken.ThrowIfCancellationRequested();
+            existingByMarker.TryGetValue(source.Id, out var existing);
+            var markerMatched = existing is not null;
+            var desiredKey = TrackIdentity.Key(source.Title, source.Artist, source.Album, source.TrackNumber);
+            if (markerMatched && existingByKey.TryGetValue(desiredKey, out var duplicate) && duplicate.Id != existing!.Id)
+            {
+                // A retag may collide with an older/manual iPod entry. Adopt the already-present
+                // destination identity and skip this item; one duplicate must never abort the batch.
+                duplicate.Comment = TrackIdentity.Marker(source.Id);
+                existing.Comment = "";
+                databaseDirty = true;
+                var duplicateFingerprint = DesiredFingerprint(source, preset);
+                alreadyPresent++;
+                current.Add((source, duplicateFingerprint));
+                DebugLog.Write("Music sync", $"Skipped duplicate identity while retagging track={source.Id}");
+                continue;
+            }
+            if (existing is null) existingByKey.TryGetValue(desiredKey, out existing);
+            if (existing is null)
+                foreach (var previous in source.PreviousMetadataIdentities ?? [])
+                    if (existingByKey.TryGetValue(previous, out existing)) break;
+            if (existing is not null && !claimed.Add(existing.Id)) existing = null;
+            if (existing is not null && TrackIdentity.MarkerId(existing.Comment) != source.Id)
+            {
+                existing.Comment = TrackIdentity.Marker(source.Id); databaseDirty = true;
+            }
+            var fingerprint = DesiredFingerprint(source, preset);
+            var knownFingerprint = source.SyncedIPodFingerprints?.GetValueOrDefault(deviceId);
+            var retaggedLegacy = existing is not null && !markerMatched && knownFingerprint is null && source.MetadataManagedByLibrary;
+            if (existing is null || retaggedLegacy || knownFingerprint is not null && knownFingerprint != fingerprint || NeedsReplacement(rootPath, existing, source, preset))
+                candidates.Add(new SyncCandidate(source, existing, fingerprint));
+            else { alreadyPresent++; current.Add((source, fingerprint)); }
         }
         if (randomFill) Shuffle(candidates);
 
         var remaining = Math.Max(0, new DriveInfo(rootPath).AvailableFreeSpace - SpaceReserve);
         var noSpace = 0;
-        if (candidates.Count == 0) return new SyncResult(0, 0, alreadyPresent, unsupported, missing, noSpace);
+        if (candidates.Count == 0 && !databaseDirty)
+        {
+            foreach (var item in current) RememberFingerprint(item.Source, deviceId, item.Fingerprint);
+            return new SyncResult(0, 0, alreadyPresent, unsupported, missing, noSpace);
+        }
 
         var backup = BackupDatabase(rootPath);
         var added = new List<IPodTrack>();
         var replacedMedia = new List<ReplacedMedia>();
         var replaced = 0;
+        var synced = new List<(Track Source, string Fingerprint)>();
         var temporaryDirectory = Path.Combine(Path.GetTempPath(), $"hTunes-transcode-{Guid.NewGuid():N}");
         Clickwheel.IPodBackup.EnableBackups = false;
         ipod.AcquireLock();
@@ -64,6 +106,7 @@ internal static class IPodSyncService
         {
             for (var index = 0; index < candidates.Count; index++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var candidate = candidates[index];
                 var source = candidate.Source;
                 var syncPath = source.FilePath;
@@ -91,6 +134,7 @@ internal static class IPodSyncService
                         try
                         {
                             added.Add(ipod.Tracks.Add(CreateNewTrack(source, library, syncPath)));
+                            synced.Add((source, candidate.Fingerprint));
                             remaining -= size;
                         }
                         catch (TrackAlreadyExistsException) { alreadyPresent++; }
@@ -109,6 +153,7 @@ internal static class IPodSyncService
                     foreach (var membership in memberships)
                         membership.Playlist.AddTrack(replacement, Math.Min(membership.Position, membership.Playlist.TrackCount));
                     added.Add(replacement);
+                    synced.Add((source, candidate.Fingerprint));
                     replaced++;
                     remaining = remaining + reclaimed - size;
                 }
@@ -117,9 +162,12 @@ internal static class IPodSyncService
                     if (temporarySyncPath is not null) FFmpegTranscoder.TryDelete(temporarySyncPath);
                 }
             }
-            if (added.Count == 0) return new SyncResult(0, 0, alreadyPresent, unsupported, missing, noSpace);
-            progress?.Report(new SyncProgress(candidates.Count, candidates.Count, "Updating the iPod library"));
-            ipod.SaveChanges();
+            if (added.Count > 0 || databaseDirty)
+            {
+                progress?.Report(new SyncProgress(candidates.Count, candidates.Count, "Updating the iPod library"));
+                ipod.SaveChanges();
+            }
+            foreach (var item in current.Concat(synced)) RememberFingerprint(item.Source, deviceId, item.Fingerprint);
             return new SyncResult(added.Count - replaced, replaced, alreadyPresent, unsupported, missing, noSpace);
         }
         catch
@@ -156,11 +204,33 @@ internal static class IPodSyncService
     {
         var desiredFormat = preset.IsOriginal ? AudioFormat(source.FilePath) : PresetFormat(preset);
         var existingPath = ResolveIPodPath(rootPath, existing.FilePath);
+        if (!File.Exists(existingPath)) return true;
         var existingFormat = AudioFormat(existingPath, existing.FilePath);
         if (!FormatsMatch(desiredFormat, existingFormat)) return true;
 
+        if (!Same(existing.Title, source.Title) || !Same(existing.Artist, source.Artist) || !Same(existing.AlbumArtist, string.IsNullOrWhiteSpace(source.AlbumArtist) ? source.Artist : source.AlbumArtist) || !Same(existing.Album, source.Album) ||
+            !Same(existing.Genre, source.Genre) || existing.TrackNumber != (uint)Math.Max(0, source.TrackNumber) ||
+            existing.DiscNumber != (uint)Math.Max(1, source.DiscNumber) || existing.Year != (uint)Math.Max(0, source.Year)) return true;
+
         var desiredBitrate = preset.BitrateKbps ?? (preset.IsOriginal ? ReadBitrate(source.FilePath) : null);
         return desiredBitrate is > 0 && existing.Bitrate > 0 && Math.Abs((long)existing.Bitrate - desiredBitrate.Value) > 8;
+    }
+
+    internal static string DesiredFingerprint(Track source, TranscodePreset preset)
+    {
+        var file = new FileInfo(source.FilePath);
+        var artwork = source.ArtworkPath is not null && File.Exists(source.ArtworkPath) ? new FileInfo(source.ArtworkPath) : null;
+        var value = string.Join('\u001f', source.Id, source.Title, source.Artist, source.AlbumArtist, source.Album, source.Genre, source.TrackNumber, source.DiscNumber, source.Year,
+            preset.Id, file.Exists ? file.Length : -1, file.Exists ? file.LastWriteTimeUtc.Ticks : 0,
+            artwork?.FullName ?? "", artwork?.Length ?? -1, artwork?.LastWriteTimeUtc.Ticks ?? 0);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    }
+
+    private static void RememberFingerprint(Track source, string deviceId, string fingerprint)
+    {
+        source.SyncedIPodFingerprints ??= [];
+        source.SyncedIPodFingerprints[deviceId] = fingerprint;
+        source.IsNew = false;
     }
 
     private static string PresetFormat(TranscodePreset preset) => preset.Codec switch
@@ -260,7 +330,7 @@ internal static class IPodSyncService
             FilePath = syncPath,
             Title = source.Title,
             Artist = source.Artist,
-            AlbumArtist = source.Artist,
+            AlbumArtist = string.IsNullOrWhiteSpace(source.AlbumArtist) ? source.Artist : source.AlbumArtist,
             Album = source.Album,
             Genre = source.Genre,
             TrackNumber = (uint)Math.Max(0, source.TrackNumber),
@@ -271,7 +341,8 @@ internal static class IPodSyncService
             Length = length,
             Bitrate = bitrate,
             IsVideo = false,
-            ArtworkFile = source.ArtworkPath is not null && File.Exists(source.ArtworkPath) ? source.ArtworkPath : null
+            ArtworkFile = source.ArtworkPath is not null && File.Exists(source.ArtworkPath) ? source.ArtworkPath : null,
+            Comments = TrackIdentity.Marker(source.Id)
         };
     }
 

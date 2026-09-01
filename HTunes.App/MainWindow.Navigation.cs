@@ -15,27 +15,33 @@ public partial class MainWindow
     private void InitializeNavigation()
     {
         foreach (var button in ((Panel)ArtistCategoryButton.Parent).Children.OfType<RadioButton>()) button.Click += Category_Click;
-        foreach (var list in new[] { PrimaryList, SecondaryList, PodcastShowsList })
+        foreach (var list in new[] { PrimaryList, SecondaryList })
         {
-            list.AddHandler(MouseLeftButtonUpEvent, new MouseButtonEventHandler(BrowseList_MouseLeftButtonUp), true);
+            list.MouseDoubleClick += BrowseList_MouseDoubleClick;
             list.KeyDown += BrowseList_KeyDown;
         }
+        PodcastShowsList.AddHandler(MouseLeftButtonUpEvent, new MouseButtonEventHandler(PodcastShow_MouseLeftButtonUp), true);
+        PodcastShowsList.KeyDown += BrowseList_KeyDown;
         PodcastShowsList.PreviewMouseLeftButtonDown += CategoryList_PreviewMouseLeftButtonDown;
         InputBindings.Add(new KeyBinding(NavigationCommands.BrowseBack, new KeyGesture(Key.Left, ModifierKeys.Alt)));
         CommandBindings.Add(new CommandBinding(NavigationCommands.BrowseBack, (_, _) => GoBack(),
             (_, e) => e.CanExecute = !isRenameView && !isTagView && !isDownloadView && ContextActionsAvailable && (isPodcastView ? podcastShowOpen : musicBrowse.CanGoBack || PlaylistList.SelectedItem is Playlist)));
     }
 
-    // Open on release, not selection-change: Ctrl/Shift, right-click, keyboard selection and drags must stay on the list.
-    private void BrowseList_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    private void BrowseList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         if (sender is not ListBox list || categoryDragPerformed || browseClickModified || Keyboard.Modifiers != ModifierKeys.None || list.SelectedItems.Count != 1) return;
-        var position = e.GetPosition(null);
-        if (Math.Abs(position.X - dragStart.X) >= SystemParameters.MinimumHorizontalDragDistance || Math.Abs(position.Y - dragStart.Y) >= SystemParameters.MinimumVerticalDragDistance) return;
         var item = ItemsControl.ContainerFromElement(list, e.OriginalSource as DependencyObject) as ListBoxItem;
         if (item is null || !item.IsSelected) return;
         OpenBrowseItem(list);
         e.Handled = true;
+    }
+
+    private void PodcastShow_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (Keyboard.Modifiers != ModifierKeys.None || PodcastShowsList.SelectedItems.Count != 1) return;
+        if (ItemsControl.ContainerFromElement(PodcastShowsList, e.OriginalSource as DependencyObject) is not ListBoxItem item || !item.IsSelected) return;
+        OpenBrowseItem(PodcastShowsList); e.Handled = true;
     }
 
     private void BrowseList_KeyDown(object sender, KeyEventArgs e)
@@ -46,9 +52,9 @@ public partial class MainWindow
 
     private void OpenBrowseItem(ListBox list)
     {
-        if (!ContextActionsAvailable) return;
         if (list == PodcastShowsList && list.SelectedItem is PodcastShow) { OpenPodcastShow(); return; }
-        if (list.SelectedItem is not string name) return;
+        if (list.SelectedItem is not BrowseItem selected) return;
+        var name = selected.Name;
         if (list == PrimaryList) musicBrowse.OpenGroup(name); else musicBrowse.OpenAlbum(name);
         RefreshBrowser();
         FocusCurrentMusicPage();
@@ -70,14 +76,23 @@ public partial class MainWindow
 
     private void GoBack()
     {
-        if (isPodcastView) { podcastShowOpen = false; RefreshPodcastShowPanel(); lastActionSource = PodcastShowsList; PodcastShowsList.Focus(); return; }
+        if (isPodcastView)
+        {
+            if (podcastShowOpen && SelectedPodcastShow is { } show)
+            {
+                show.SeenEpisodeIds = show.Episodes.Select(episode => episode.Id).ToList();
+                show.EpisodeSeenStateInitialized = true;
+                if (initializeServices) SavePodcastLibrary();
+            }
+            podcastShowOpen = false; RefreshPodcastShowPanel(); lastActionSource = PodcastShowsList; PodcastShowsList.Focus(); return;
+        }
         if (PlaylistList.SelectedItem is Playlist) ResetMusicNavigation();
         else
         {
             var opened = musicBrowse.Album ?? musicBrowse.Group;
             musicBrowse.Back(); RefreshBrowser();
             var list = musicBrowse.ShowsAlbums ? SecondaryList : PrimaryList;
-            list.SelectedItem = list.Items.Cast<string>().FirstOrDefault(item => string.Equals(item, opened, StringComparison.OrdinalIgnoreCase));
+            list.SelectedItem = list.Items.Cast<BrowseItem>().FirstOrDefault(item => string.Equals(item.Name, opened, StringComparison.OrdinalIgnoreCase));
             if (list.SelectedItem is not null) list.ScrollIntoView(list.SelectedItem);
         }
         FocusCurrentMusicPage();
@@ -102,10 +117,12 @@ public partial class MainWindow
         PodcastHomeEmpty.Visibility = PodcastShows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private static void ReplaceBrowseItems(ListBox list, IEnumerable<string>? items)
+    private static void ReplaceBrowseItems(ListBox list, IEnumerable<BrowseItem>? items)
     {
-        var selected = list.SelectedItems.Cast<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var selected = list.SelectedItems.Cast<BrowseItem>().Select(item => item.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         list.ItemsSource = items?.ToList();
-        foreach (var item in list.Items.Cast<string>().Where(selected.Contains)) list.SelectedItems.Add(item);
+        foreach (var item in list.Items.Cast<BrowseItem>().Where(item => selected.Contains(item.Name))) list.SelectedItems.Add(item);
     }
 }
+
+public sealed record BrowseItem(string Name, bool IsNew);

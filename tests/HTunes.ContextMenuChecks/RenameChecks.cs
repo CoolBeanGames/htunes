@@ -117,7 +117,7 @@ internal static partial class Program
             var rows = grid.Items.Cast<RenameGridRow>().ToList();
             Require(rows[0].Proposed == "The Coastline - Northbound.flac" && rows[4].Status == "Not in scope", "Only selected rows should show the transformed filename.");
             Set("isTagSaving", true); Call("UpdateBusyWorkspaces");
-            Require(!Control<FrameworkElement>("RenameWorkspace").IsEnabled && !Control<Button>("RenameApplyButton").IsEnabled, "Tag saves must prevent concurrent renaming.");
+            Require(Control<FrameworkElement>("RenameWorkspace").IsEnabled && !Control<Button>("RenameApplyButton").IsEnabled, "Tag saves must keep browsing available while preventing a conflicting rename write.");
             Set("isTagSaving", false); Call("UpdateBusyWorkspaces");
             Control<TextBlock>("RenameStatus").Text = "Preview with sample tracks • 4 files will be renamed. Extensions and audio contents stay unchanged.";
             CaptureRenameScreenshot(window, "rename-editor");

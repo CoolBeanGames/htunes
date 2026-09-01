@@ -28,6 +28,7 @@ internal static partial class Program
             CheckSettings();
             CheckImportFileSafety();
             CheckPodcastPolicies();
+            CheckNewStateAndSyncIdentity();
             CheckSettingsWindow();
             CheckSinglePanelNavigation();
             CheckYtDlp();
@@ -103,6 +104,38 @@ internal static partial class Program
         try { failing.Undo(); }
         catch (InvalidOperationException) { }
         Require(failing.CanUndo && !failing.CanRedo, "A failed undo must not remove its history entry.");
+    }
+
+    private static void CheckNewStateAndSyncIdentity()
+    {
+        InTemporaryDirectory(directory =>
+        {
+            var path = Path.Combine(directory, "track.wav");
+            File.WriteAllBytes(path, [1, 2, 3, 4]);
+            var track = new Track { FilePath = path, Title = "Song", Artist = "Artist", Album = "Album", Genre = "Rock", TrackNumber = 1, Year = 2020, IsNew = true };
+            var marker = TrackIdentity.Marker(track.Id);
+            Require(TrackIdentity.MarkerId(marker) == track.Id && TrackIdentity.MarkerId("ordinary comment") is null, "Stable hTunes iPod markers must round-trip without treating normal comments as IDs.");
+            TrackIdentity.RememberPrevious(track, "Old song", "Artist", "Album", 1);
+            Require(track.PreviousMetadataIdentities.Count == 1, "Retagging must retain an old iPod identity for migration.");
+            var preset = TranscodePresets.Get("original");
+            var fingerprint = IPodSyncService.DesiredFingerprint(track, preset);
+            track.Genre = "Alternative";
+            Require(IPodSyncService.DesiredFingerprint(track, preset) != fingerprint, "Genre edits must make an existing iPod copy eligible for replacement.");
+            fingerprint = IPodSyncService.DesiredFingerprint(track, preset);
+            track.AlbumArtist = "Artist Sound Team";
+            Require(IPodSyncService.DesiredFingerprint(track, preset) != fingerprint, "Album-artist edits must make an existing iPod copy eligible for replacement.");
+            Require(MusicBrainzTagService.SimplifyGenre(["hip hop", "r&b"], "", "") == "Rap" &&
+                MusicBrainzTagService.SimplifyGenre(["video game soundtrack", "metal"], "", "") == "Game Music" &&
+                MusicBrainzTagService.SimplifyGenre([], "My Chemical Romance", "") == "Emo", "Auto-tag genre policy must apply the requested broad categories and soundtrack priority.");
+
+            var second = new Track { Artist = "Artist", Album = "Other", IsNew = false };
+            var grouped = new[] { track, second }.GroupBy(item => item.Artist).Single();
+            Require(grouped.Any(item => item.IsNew) && new[] { track, second }.Where(item => item.Album == "Album").Single().IsNew,
+                "A new song must roll up only to its own album and artist.");
+            Require(PodcastEpisodeOrdering.Number(new PodcastEpisode { EpisodeNumber = "10" }) == 10 &&
+                PodcastEpisodeOrdering.Order([new() { EpisodeNumber = "10" }, new() { EpisodeNumber = "2" }], oldest: true).First().EpisodeNumber == "2",
+                "Podcast episode ordering must be numeric rather than lexical.");
+        });
     }
 
     private static void CheckMetadataHistoryIsolation()
@@ -317,15 +350,16 @@ internal static partial class Program
             Capture("artists");
             var primary = Control<ListBox>("PrimaryList");
             var secondary = Control<ListBox>("SecondaryList");
-            primary.SelectedItem = "Alpha";
+            BrowseItem Item(ListBox list, string name) => list.Items.Cast<BrowseItem>().Single(item => item.Name == name);
+            primary.SelectedItem = Item(primary, "Alpha");
             Page("PrimaryPanel"); // Programmatic/right-click/keyboard selection alone must not navigate.
-            primary.SelectedItems.Add("Beta");
+            primary.SelectedItems.Add(Item(primary, "Beta"));
             Require(((List<Track>)Call("ContextCategoryTracks", false)!).Count == 3, "Multiple artists must still resolve to all their tracks.");
-            primary.SelectedItems.Clear(); primary.SelectedItem = "Alpha";
+            primary.SelectedItems.Clear(); primary.SelectedItem = Item(primary, "Alpha");
             Call("OpenBrowseItem", primary); Page("SecondaryPanel");
             Capture("artist-albums");
             Require(secondary.Items.Count == 2 && window.VisibleTracks.Count == 0, "Opening an artist must show albums, not songs alongside them.");
-            secondary.SelectedItem = "Shared";
+            secondary.SelectedItem = Item(secondary, "Shared");
             Require(((List<Track>)Call("ContextCategoryTracks", true)!).SequenceEqual([first]), "Album actions must stay scoped to the opened artist.");
             Call("OpenBrowseItem", secondary); Page("TracksPanel");
             Capture("album-songs");
@@ -336,15 +370,15 @@ internal static partial class Program
             Require(window.VisibleTracks.Count == 0, "Search must filter the opened page without escaping to the root.");
             Control<TextBox>("SearchBox").Text = ""; Call("RefreshBrowser");
             Call("GoBack"); Page("SecondaryPanel");
-            Require(Equals(secondary.SelectedItem, "Shared"), "Back must preserve the previously opened album selection.");
+            Require((secondary.SelectedItem as BrowseItem)?.Name == "Shared", "Back must preserve the previously opened album selection.");
             Call("GoBack"); Page("PrimaryPanel");
-            Require(Equals(primary.SelectedItem, "Alpha") && Control<Button>("MusicBackButton").Visibility == Visibility.Collapsed, "Back from artist albums must return to artists without another Back level.");
+            Require((primary.SelectedItem as BrowseItem)?.Name == "Alpha" && Control<Button>("MusicBackButton").Visibility == Visibility.Collapsed, "Back from artist albums must return to artists without another Back level.");
             Set("category", "Album"); Call("ResetMusicNavigation");
-            primary.SelectedItem = "Other"; Call("OpenBrowseItem", primary); Page("TracksPanel");
+            primary.SelectedItem = Item(primary, "Other"); Call("OpenBrowseItem", primary); Page("TracksPanel");
             Require(window.VisibleTracks.SequenceEqual([second]), "Albums must open directly to songs.");
             Call("GoBack"); Page("PrimaryPanel");
             Set("category", "Genre"); Call("ResetMusicNavigation");
-            primary.SelectedItem = "Rock"; Call("OpenBrowseItem", primary); Page("TracksPanel");
+            primary.SelectedItem = Item(primary, "Rock"); Call("OpenBrowseItem", primary); Page("TracksPanel");
             Require(window.VisibleTracks.Count == 2, "Genres must open their songs in the same single-panel layout.");
             Set("category", "Songs"); Call("ResetMusicNavigation"); Page("TracksPanel");
             Require(window.VisibleTracks.Count == 3, "Songs must show the complete library directly.");
@@ -359,9 +393,9 @@ internal static partial class Program
             var deviceEpisode = new Track { Title = "Device episode", Artist = "Host", Album = "Device show", IsPodcast = true };
             Set("ipodTracks", new List<Track> { first, deviceEpisode }); Set("isIPodView", true);
             Set("category", "Artist"); Call("ResetMusicNavigation"); Page("PrimaryPanel");
-            Require(primary.Items.Count == 1 && Equals(primary.Items[0], "Alpha"), "iPod music browsing must exclude podcasts.");
+            Require(primary.Items.Count == 1 && (primary.Items[0] as BrowseItem)?.Name == "Alpha", "iPod music browsing must exclude podcasts.");
             Set("category", "Podcast"); Call("ResetMusicNavigation");
-            primary.SelectedItem = "Device show"; Call("OpenBrowseItem", primary); Page("TracksPanel");
+            primary.SelectedItem = Item(primary, "Device show"); Call("OpenBrowseItem", primary); Page("TracksPanel");
             Require(window.VisibleTracks.SequenceEqual([deviceEpisode]), "iPod shows must open just their device episodes without device IO.");
             Set("isIPodView", false);
 

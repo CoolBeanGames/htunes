@@ -43,6 +43,11 @@ public partial class MainWindow
             if (data is null) return;
             foreach (var show in data.Shows)
             {
+                if (!show.EpisodeSeenStateInitialized)
+                {
+                    show.SeenEpisodeIds = show.Episodes.Select(episode => episode.Id).ToList();
+                    show.EpisodeSeenStateInitialized = true;
+                }
                 foreach (var episode in show.Episodes)
                 {
                     if (!string.IsNullOrWhiteSpace(episode.LocalPath) && !File.Exists(episode.LocalPath)) episode.LocalPath = null;
@@ -73,6 +78,13 @@ public partial class MainWindow
     private async Task EnterPodcastViewAsync()
     {
         RefreshPodcastShowPanel();
+        if (!SettingsStore.Current.PodcastRefreshOnOpen || podcastsRefreshedThisSession || PodcastShows.Count == 0) return;
+        podcastsRefreshedThisSession = true;
+        await RefreshShowsAsync(PodcastShows.Where(show => DateTime.UtcNow - show.LastRefreshedUtc > TimeSpan.FromMinutes(15)).ToList());
+    }
+
+    private async Task RefreshPodcastsInBackgroundAsync()
+    {
         if (!SettingsStore.Current.PodcastRefreshOnOpen || podcastsRefreshedThisSession || PodcastShows.Count == 0) return;
         podcastsRefreshedThisSession = true;
         await RefreshShowsAsync(PodcastShows.Where(show => DateTime.UtcNow - show.LastRefreshedUtc > TimeSpan.FromMinutes(15)).ToList());
@@ -124,6 +136,8 @@ public partial class MainWindow
         {
             PodcastSearchButton.IsEnabled = false;
             await PodcastService.RefreshShowAsync(show);
+            show.EpisodeSeenStateInitialized = true;
+            show.SeenEpisodeIds = [];
             var index = PodcastShows.Count;
             PodcastShows.Add(show);
             RecordEdit("Subscribe to podcast", () => DetachPodcastShow(show), () => PodcastShows.Insert(Math.Min(index, PodcastShows.Count), show));
@@ -145,7 +159,7 @@ public partial class MainWindow
         var show = SelectedPodcastShow;
         PodcastShowTitle.Text = show?.Title ?? "Select a podcast";
         PodcastShowSummary.Text = show is null ? "Search for a show above or paste its RSS feed URL." : $"{show.Author}  •  {show.UnplayedCount} unplayed  •  {show.DownloadedCount} downloaded";
-        PodcastEpisodesGrid.ItemsSource = show?.Episodes;
+        PodcastEpisodesGrid.ItemsSource = show is null ? null : PodcastEpisodeOrdering.Order(show.Episodes, oldest: false).ToList();
         PodcastEmptyState.Visibility = show is null || show.Episodes.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         PodcastSyncCountBox.Text = show?.SyncEpisodeCount.ToString() ?? "3";
         PodcastSyncOrderCombo.SelectedIndex = show?.SyncOrder.Equals("Oldest", StringComparison.OrdinalIgnoreCase) == true ? 1 : 0;
@@ -393,9 +407,9 @@ public partial class MainWindow
 
     private async Task SyncPodcastSelectionsAsync(IReadOnlyCollection<PodcastEpisodeSelection> selections, bool mirrorSubscriptions, bool showSummary = true)
     {
-        if (isRenaming || isTagSaving || isYtDownloading || isSyncing || isReconcilingPlayCounts || currentDevice is null) return;
+        if (isRenaming || isTagSaving || isSyncing || isReconcilingPlayCounts || currentDevice is null) return;
         var device = currentDevice;
-        isSyncing = true; deviceTimer.Stop(); SyncAllButton.IsEnabled = EjectButton.IsEnabled = false; SyncAllButton.Content = "Syncing…";
+        isSyncing = true; syncCancellation = new CancellationTokenSource(); var syncToken = syncCancellation.Token; deviceTimer.Stop(); SyncCurrentButton.IsEnabled = SyncAllButton.IsEnabled = EjectButton.IsEnabled = false; StopSyncButton.Visibility = Visibility.Visible; StopSyncButton.IsEnabled = true; SyncAllButton.Content = "Syncing…";
         UpdateBusyWorkspaces();
         try
         {
@@ -406,18 +420,21 @@ public partial class MainWindow
             var completed = 0;
             foreach (var selection in selections)
             {
+                syncToken.ThrowIfCancellationRequested();
                 if (!selection.Episode.IsDownloaded && !await DownloadPodcastEpisodeAsync(selection.Show, selection.Episode))
                     throw new InvalidOperationException($"{selection.Episode.Title} could not be downloaded. No changes were made to the iPod.");
                 completed++;
                 DeviceDetailsText.Text = $"  •  Preparing podcasts  ({completed}/{selections.Count})";
             }
             var ready = selections.Where(selection => selection.Episode.IsDownloaded).ToList();
-            var result = await Task.Run(() => PodcastIPodSyncService.Sync(device.RootPath, ready, PodcastShows.ToList(), mirrorSubscriptions));
+            syncToken.ThrowIfCancellationRequested();
+            var result = await Task.Run(() => PodcastIPodSyncService.Sync(device.RootPath, ready, PodcastShows.ToList(), mirrorSubscriptions), syncToken);
             await LoadIPodTracksAsync(device);
             DebugLog.Write("Podcast sync", result.Summary);
             if (showSummary) MessageBox.Show(this, result.Summary, "Podcast sync complete", MessageBoxButton.OK, MessageBoxImage.Information);
         }
+        catch (OperationCanceledException) { DebugLog.Write("Podcast sync", "Cancelled by user"); if (showSummary) MessageBox.Show(this, "Podcast sync stopped safely.", "Sync stopped"); }
         catch (Exception ex) { DebugLog.Write("Podcast sync", "Failed", ex); MessageBox.Show(this, $"Podcast sync failed.\n\n{ex.GetBaseException().Message}", "Podcast sync failed", MessageBoxButton.OK, MessageBoxImage.Error); }
-        finally { isSyncing = false; SyncAllButton.Content = "Sync podcasts"; deviceTimer.Start(); RefreshDevice(); UpdateDeviceStripMode(); UpdateBusyWorkspaces(); }
+        finally { isSyncing = false; syncCancellation?.Dispose(); syncCancellation = null; StopSyncButton.Visibility = Visibility.Collapsed; SyncAllButton.Content = "Sync all"; deviceTimer.Start(); RefreshDevice(); UpdateDeviceStripMode(); UpdateBusyWorkspaces(); }
     }
 }

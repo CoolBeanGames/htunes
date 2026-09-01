@@ -1,7 +1,9 @@
 using Microsoft.Win32;
+using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 
 namespace HTunes.App;
 
@@ -18,7 +20,7 @@ public partial class MainWindow
     private void InitializeTagEditor()
     {
         var numeric = new System.Windows.Controls.Primitives.UniformGrid { Columns = 3 };
-        foreach (var (field, label) in new[] { ("Title", "Title"), ("Artist", "Artist"), ("Album", "Album"), ("Genre", "Genre"), ("TrackNumber", "Track #"), ("DiscNumber", "Disc #"), ("Year", "Year") })
+        foreach (var (field, label) in new[] { ("Title", "Title"), ("Artist", "Artist"), ("AlbumArtist", "Album artist (optional)"), ("Album", "Album"), ("Genre", "Genre"), ("TrackNumber", "Track #"), ("DiscNumber", "Disc #"), ("Year", "Year") })
         {
             var check = new CheckBox { Content = label, FontSize = 12, Margin = new Thickness(0, 0, 0, 3) };
             var box = new TextBox { Padding = new Thickness(6, 3, 6, 3), MinWidth = 40, Tag = field };
@@ -49,6 +51,11 @@ public partial class MainWindow
             TagTracksGrid.Items.Refresh(); return; // Keep the current draft when revisiting the tab or refreshing another workspace.
         }
         var sorts = TagTracksGrid.Items.SortDescriptions.ToList();
+        if (sorts.Count == 0)
+            sorts = [new(nameof(Track.Genre), ListSortDirection.Ascending), new(nameof(Track.Artist), ListSortDirection.Ascending),
+                new(nameof(Track.Album), ListSortDirection.Ascending), new(nameof(Track.TrackNumber), ListSortDirection.Ascending)];
+        var scroller = FindVisualChild<ScrollViewer>(TagTracksGrid);
+        var verticalOffset = scroller?.VerticalOffset ?? 0;
         refreshingTagGrid = true;
         try
         {
@@ -58,9 +65,21 @@ public partial class MainWindow
             foreach (var row in rows.Where(t => selected.Contains(t.Id))) TagTracksGrid.SelectedItems.Add(row);
         }
         finally { refreshingTagGrid = false; }
+        if (scroller is not null) Dispatcher.BeginInvoke(new Action(() => scroller.ScrollToVerticalOffset(verticalOffset)), System.Windows.Threading.DispatcherPriority.Loaded);
         TagLibrarySummary.Text = $"{rows.Count:N0} of {allTracks.Count:N0} library tracks • {TagSelection.Count:N0} selected";
         TagEmptyState.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         LoadTagInspector();
+    }
+
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T match) return match;
+            if (FindVisualChild<T>(child) is { } nested) return nested;
+        }
+        return null;
     }
 
     private void TagSearch_TextChanged(object sender, TextChangedEventArgs e)
@@ -141,6 +160,7 @@ public partial class MainWindow
         var available = ContextActionsAvailable && TagSelection.Count > 0;
         TagInspector.IsEnabled = TagWriteFiles.IsEnabled = available;
         TagApplyButton.IsEnabled = available && TagHasPendingChanges;
+        TagAutoButton.IsEnabled = available;
         TagResetButton.IsEnabled = available;
     }
 
@@ -179,12 +199,52 @@ public partial class MainWindow
         finally { isTagSaving = false; if (initializeServices) RefreshDevice(); UpdateBusyWorkspaces(); }
     }
 
+    private async void TagAuto_Click(object sender, RoutedEventArgs e)
+    {
+        if (!ContextActionsAvailable || TagSelection.Count == 0) return;
+        var selected = TagSelection.ToList();
+        var force = TagForceAuto.IsChecked == true;
+        var writeFiles = TagWriteFiles.IsChecked == true;
+        var edits = new List<TagBatchEdit>();
+        var artistGenres = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var matched = 0; var skipped = 0; var failed = 0;
+        isTagSaving = true; UpdateBusyWorkspaces();
+        try
+        {
+            for (var index = 0; index < selected.Count; index++)
+            {
+                var track = selected[index];
+                TagStatus.Text = $"Looking up {index + 1:N0} of {selected.Count:N0}: {track.Title}";
+                try
+                {
+                    var match = await MusicBrainzTagService.FindAsync(track, force, CancellationToken.None);
+                    if (match is null) { skipped++; continue; }
+                    var fields = match.Fields.ToDictionary(item => item.Key, item => item.Value);
+                    var artistKey = fields.GetValueOrDefault("Artist", track.Artist);
+                    if (fields.TryGetValue("Genre", out var foundGenre) && !string.IsNullOrWhiteSpace(artistKey)) artistGenres.TryAdd(artistKey, foundGenre);
+                    if (!string.IsNullOrWhiteSpace(artistKey) && artistGenres.TryGetValue(artistKey, out var sharedGenre) &&
+                        (force || track.Genre.Equals("Music", StringComparison.OrdinalIgnoreCase) || track.Genre.StartsWith("Unknown", StringComparison.OrdinalIgnoreCase))) fields["Genre"] = sharedGenre;
+                    var patch = new TagPatch(fields, MarkAutoTagged: true);
+                    var edit = await Task.Run(() => TagBatchEdit.Apply([track], patch, writeFiles, Path.Combine(SettingsStore.DataDirectory, "artwork"), () => Dispatcher.Invoke(SaveLibrary)));
+                    edits.Add(edit); matched++;
+                }
+                catch (Exception ex) { failed++; DebugLog.Write("Auto tag", $"Failed track={track.Id}", ex); }
+            }
+            if (edits.Count > 0)
+                RecordEdit("Auto-tag selected tracks", () => edits.AsEnumerable().Reverse().ToList().ForEach(edit => edit.Undo()), () => edits.ForEach(edit => edit.Redo()));
+            RefreshBrowser(); RefreshTagLibrary();
+            TagStatus.Text = $"Auto-tag complete: {matched} matched, {skipped} skipped/no confident match, {failed} failed. MusicBrainz requests are rate-limited.";
+        }
+        finally { isTagSaving = false; if (initializeServices) RefreshDevice(); UpdateBusyWorkspaces(); }
+    }
+
     private void BuildTagMenu(ItemsControl menu)
     {
         AddMenuAction(menu, "Focus tag inspector", () => tagFields["Title"].Box.Focus(), TagSelection.Count > 0);
         // Invoke after the context-menu busy wrapper releases its guard.
         AddMenuAction(menu, "Apply inspector changes", () => Dispatcher.BeginInvoke(new Action(() => TagApply_Click(this, new RoutedEventArgs()))), TagSelection.Count > 0 && TagHasPendingChanges);
         AddMenuAction(menu, "Reset inspector", () => TagReset_Click(this, new RoutedEventArgs()), TagSelection.Count > 0);
+        AddMenuAction(menu, "Auto-tag selection", () => Dispatcher.BeginInvoke(new Action(() => TagAuto_Click(this, new RoutedEventArgs()))), TagSelection.Count > 0);
         if (TagSelection.Count == 1) AddMenuAction(menu, "Show file in Explorer", () => RevealFile(TagSelection[0].FilePath), File.Exists(TagSelection[0].FilePath));
     }
 }
