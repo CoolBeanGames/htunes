@@ -50,7 +50,12 @@ public partial class App : Application
         requestWait = ThreadPool.RegisterWaitForSingleObject(showRequest, (_, _) => Dispatcher.BeginInvoke(new Action(OpenMainWindow)), null, Timeout.Infinite, false);
         watcher.Tick += (_, _) => CheckForIPod();
         ConfigureWatcher();
-        if (!e.Args.Contains("--watch-ipod")) OpenMainWindow();
+        if (!e.Args.Contains("--watch-ipod"))
+        {
+            var splash = new SplashScreen("Assets/splash.png");
+            splash.Show(autoClose: false, topMost: true);
+            OpenMainWindow(splash);
+        }
         else if (SettingsStore.Current.OpenOnIPodConnection) CheckForIPod();
         else Shutdown();
     }
@@ -88,11 +93,14 @@ public partial class App : Application
         catch (Exception ex) { DebugLog.Write("Watcher", "Detection failed", ex); }
     }
 
-    private void OpenMainWindow()
+    private void OpenMainWindow() => OpenMainWindow(null);
+
+    private void OpenMainWindow(SplashScreen? splash)
     {
-        if (exiting) return;
+        if (exiting) { splash?.Close(TimeSpan.Zero); return; }
         if (MainWindow is { } existing)
         {
+            splash?.Close(TimeSpan.Zero);
             existing.Show();
             if (existing.WindowState == WindowState.Minimized) existing.WindowState = WindowState.Normal;
             existing.Activate(); return;
@@ -101,6 +109,7 @@ public partial class App : Application
         MainWindow = window;
         window.StartupCheckInProgress = true;
         window.UpdateDownloadControls();
+        if (splash is not null) window.ContentRendered += (_, _) => splash.Close(TimeSpan.FromMilliseconds(250));
         window.ContentRendered += CheckDependenciesOnFirstRender;
         window.Closed += (_, _) =>
         {

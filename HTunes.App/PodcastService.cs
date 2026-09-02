@@ -96,7 +96,7 @@ internal static class PodcastService
     internal static IReadOnlyList<PodcastEpisode> EpisodesForSync(PodcastShow show, bool includeDownloaded)
     {
         var unplayed = show.Episodes.Where(episode => !episode.IsPlayed).ToList();
-        var ordered = PodcastEpisodeOrdering.Order(unplayed, show.SyncOrder.Equals("Oldest", StringComparison.OrdinalIgnoreCase));
+        var ordered = PodcastEpisodeOrdering.ByAge(unplayed, show.SyncOrder.Equals("Oldest", StringComparison.OrdinalIgnoreCase));
 
         // The per-show count controls automatic downloads. A manual download is an explicit request
         // to keep/sync that episode too, even when it falls outside the automatic newest/oldest set.

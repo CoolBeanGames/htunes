@@ -22,7 +22,7 @@ public partial class MainWindow
         var numeric = new System.Windows.Controls.Primitives.UniformGrid { Columns = 3 };
         foreach (var (field, label) in new[] { ("Title", "Title"), ("Artist", "Artist"), ("AlbumArtist", "Album artist (optional)"), ("Album", "Album"), ("Genre", "Genre"), ("TrackNumber", "Track #"), ("DiscNumber", "Disc #"), ("Year", "Year") })
         {
-            var check = new CheckBox { Content = label, FontSize = 12, Margin = new Thickness(0, 0, 0, 3) };
+            var check = new CheckBox { Content = label, FontSize = 12, Margin = new Thickness(0, 0, 0, 3), IsTabStop = false };
             var box = new TextBox { Padding = new Thickness(6, 3, 6, 3), MinWidth = 40, Tag = field };
             System.Windows.Automation.AutomationProperties.SetName(box, label);
             var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 6) }; panel.Children.Add(check); panel.Children.Add(box);

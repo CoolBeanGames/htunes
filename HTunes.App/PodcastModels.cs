@@ -71,6 +71,16 @@ internal static class PodcastEpisodeOrdering
         return match.Success && int.TryParse(match.Groups[1].Value, out var titleNumber) ? titleNumber : null;
     }
 
+    // Sync selection ("keep X newest/oldest") must follow the real publication age of each episode,
+    // not its episode number or feed position. Those only break ties when a feed omits pubDate.
+    public static IEnumerable<PodcastEpisode> ByAge(IEnumerable<PodcastEpisode> episodes, bool oldest)
+    {
+        var list = episodes.ToList();
+        return oldest
+            ? list.OrderBy(episode => episode.PublishedUtc).ThenByDescending(episode => episode.FeedOrder).ThenByDescending(episode => Number(episode) ?? int.MinValue)
+            : list.OrderByDescending(episode => episode.PublishedUtc).ThenBy(episode => episode.FeedOrder).ThenBy(episode => Number(episode) ?? int.MaxValue);
+    }
+
     public static IOrderedEnumerable<PodcastEpisode> Order(IEnumerable<PodcastEpisode> episodes, bool oldest)
     {
         var numbered = episodes.Any(episode => Number(episode) is not null);

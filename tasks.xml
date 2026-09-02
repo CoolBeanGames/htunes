@@ -1,0 +1,439 @@
+<?xml version="1.0" encoding="utf-8"?>
+<tasks project="htunes" nextIndex="21">
+  <task id="H-2">
+    <name>sorting issue</name>
+    <prompt>sorting by publish date for podcasts immediatly unsorts.</prompt>
+    <requirements>sorting fixed</requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>true</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags></tags>
+    <notes>The podcast episodes DataGrid had its ItemsSource reassigned to a fresh List on every RefreshPodcastShowPanel call, which destroyed the CollectionView holding the user's column sort (so any click-to-sort was wiped on the next refresh). Switched to a persistent ObservableCollection (PodcastEpisodeView) bound once, cleared/repopulated in place - matching the existing VisibleTracks pattern used by the music grid. Column sorting (including Published) now persists across refreshes. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/MainWindow.Podcasts.cs</filesChanged>
+  </task>
+  <task id="H-3">
+    <name>download x oldest</name>
+    <prompt>download x oldest podcasts doesnt actualy respect the actual age of the podcast episode</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>true</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>bug,download,podcasts</tags>
+    <notes>The per-show "keep X newest/oldest" sync selection ran through PodcastEpisodeOrdering.Order, which sorts by episode number first, then feed position, and only falls back to publish date - so "oldest" picked the lowest episode numbers rather than the genuinely oldest episodes. Added PodcastEpisodeOrdering.ByAge that sorts strictly by PublishedUtc (feed order / episode number only break ties when a feed omits pubDate) and pointed EpisodesForSync at it. The episode grid display still uses Order. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/PodcastModels.cs, HTunes.App/PodcastService.cs</filesChanged>
+  </task>
+  <task id="H-1">
+    <name>startup time</name>
+    <prompt>start-up is starting to take longer, add a splash screen on first run</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>art,startup</tags>
+    <notes>Added a native WPF SplashScreen (System.Windows.SplashScreen, painted on its own thread so it stays visible while the UI thread is blocked loading the library). Shown from App.OnStartup on the normal foreground launch (not the --watch-ipod background watcher, not second-instance activation), and closed with a 250ms fade on MainWindow.ContentRendered. Artwork is a new baked asset HTunes.App/Assets/splash.png (embedded as a Resource): charcoal gradient backdrop with an iPod click-wheel key-art motif and the hTunes wordmark, matching the app's restrained dark/muted-blue design language. The PNG was generated with a throwaway GDI+ script (not committed).</notes>
+    <filesChanged>HTunes.App/App.xaml.cs, HTunes.App/HTunes.App.csproj, HTunes.App/Assets/splash.png</filesChanged>
+    <subtasks>
+      <subtask done="true">splash launched on start up</subtask>
+      <subtask done="true">closed once main window opens</subtask>
+      <subtask done="true">splash shows key art and some background image</subtask>
+    </subtasks>
+  </task>
+  <task id="H-4">
+    <name>tab in text boxes</name>
+    <prompt>when you press tag in the text box for tagging, skip to the next text box skip checkboxes</prompt>
+    <requirements>tag working correctly</requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01</dateStarted>
+    <dueDate></dueDate>
+    <commit>true</commit>
+    <build>true</build>
+    <release>false</release>
+    <tags>control,ui</tags>
+    <notes>In the Tag tab inspector each field is a per-field "apply" CheckBox stacked above its TextBox, so Tab from a text box landed on the next checkbox. Set IsTabStop=false on those generated field checkboxes (InitializeTagEditor) so Tab now moves text box to text box; the checkbox still auto-checks when you type in its box and is still reachable by mouse. Built to builds/debug (added builds/ to .gitignore so build output is not committed). Build clean, ContextMenuChecks pass. Committed and pushed.</notes>
+    <filesChanged>HTunes.App/MainWindow.Tags.cs, .gitignore, tasks.xml</filesChanged>
+  </task>
+  <task id="H-5">
+    <name>autocomplete tagging</name>
+    <prompt>when typing artist,genre,album artist, or album add autocomplete from all known existing entries in library, press tab to submit suggested text</prompt>
+    <requirements>autocomplete added</requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>tagging,ui</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+  <task id="H-6">
+    <name>shuffle and repeat</name>
+    <prompt>add shuffle and repeat controls to playback section</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>playback,library</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+  <task id="H-7">
+    <name>more info for playback</name>
+    <prompt>show more info in the playback area, put text on TOP of the album art</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>ui,playback</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+    <subtasks>
+      <subtask done="false">album art</subtask>
+      <subtask done="false">playback position / total length</subtask>
+      <subtask done="false">progress bar</subtask>
+      <subtask done="false">current track index / tracks queued</subtask>
+    </subtasks>
+  </task>
+  <task id="H-8">
+    <name>yellow background</name>
+    <prompt>the yellow background is only supposed to be there when the track is missing data from the following list, nothing else
+-artist
+-albumn
+-genre
+-track
+(NOTE: unknown, missing, or "music" count as missing data)</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>feature fix</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+  <task id="H-9">
+    <name>double click</name>
+    <prompt>double clicking a track or podcast episode causes it to play (not artists or albumns)</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>playback,control</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+  <task id="H-10">
+    <name>album art crop</name>
+    <prompt>lets add an option to crop album art, a lot of mine is adding bars on the side, so when we resize to a square, make sure we take only the center section (im seeing tons of bars on the left and right side)</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>metadata</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+  <task id="H-11">
+    <name>exclude from shuffle</name>
+    <prompt>on standard itunes you can tell it to exclude (or include) a selection from shuffle i want that in my right click menu also</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>sync</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+  <task id="H-12">
+    <name>remove from ipod</name>
+    <prompt>I also need a way to remove tracks from the ipod, and to delete them (and the associated file if it was copied or moved) from the library</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>sync</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+  <task id="H-13">
+    <name>playlist naming</name>
+    <prompt>when creating a new playlist automatically enter rename mode before anything else</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>control,metadata</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+  <task id="H-14">
+    <name>sort order</name>
+    <prompt>when sorting by artist, we should then sort by album inside that artist, and finally by track id or name if theres no id</prompt>
+    <requirements>everything sorts correctly</requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>meta-data</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+  <task id="H-15">
+    <name>playlist duplication check</name>
+    <prompt>dont allow duplicate tracks in playlists, just skip them</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>playlists</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+  <task id="H-16">
+    <name>selection undo redo</name>
+    <prompt>incluide selection in undo/redo history(if i accidentally click something else while trying to select stuff hitting ctrl+z should reselect everything i just lost)</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>selection,control</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+  <task id="H-17">
+    <name>download metadata overrides</name>
+    <prompt>lets add tag override fields to the download, so you can override all downloaded tracks metadata with whatever is found in them when its done (these reset when you clear the links box, defaults to dont override)</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>download,metadata</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+  <task id="H-18">
+    <name>playlists missing from ipod page</name>
+    <prompt>on the ipod tab, add a field for viewing playlists so i can delete and see them (and what songs are in them) and make sure to sync any playlist changes (new songs to an existing playlist, or removals renaming etc)</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>sync</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+  <task id="H-19">
+    <name>rename tab</name>
+    <prompt>for rename lets add the "cut before character" and "cut after character" options which also delete the character listed</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>rename,metadata</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+  <task id="H-20">
+    <name>rate-limit</name>
+    <prompt>also im being rate limited by music brainz, im not sure why, maybe we should add more info to the fial/success info?</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>false</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <locked>false</locked>
+    <archived>false</archived>
+    <blockedBy></blockedBy>
+    <dateStarted></dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <tags>auto-tag</tags>
+    <notes></notes>
+    <filesChanged></filesChanged>
+  </task>
+</tasks>

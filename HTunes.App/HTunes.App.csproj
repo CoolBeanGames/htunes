@@ -11,6 +11,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Resource Include="Assets\splash.png" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />
     <PackageReference Include="Clickwheel" Version="0.1.1" />

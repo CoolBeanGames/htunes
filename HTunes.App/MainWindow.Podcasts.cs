@@ -23,12 +23,14 @@ public partial class MainWindow
     private readonly Dictionary<PodcastEpisode, Task<bool>> podcastDownloads = [];
     public ObservableCollection<PodcastShow> PodcastShows { get; } = [];
     public ObservableCollection<PodcastSearchResult> PodcastSearchResults { get; } = [];
+    public ObservableCollection<PodcastEpisode> PodcastEpisodeView { get; } = [];
 
     private void InitializePodcastUi(bool loadLibrary = true)
     {
         if (loadLibrary) LoadPodcastLibrary();
         PodcastShowsList.ItemsSource = PodcastShows;
         PodcastSearchResultsList.ItemsSource = PodcastSearchResults;
+        PodcastEpisodesGrid.ItemsSource = PodcastEpisodeView;
         podcastPlaybackTimer.Tick += (_, _) => CapturePodcastPlaybackProgress();
         player.MediaOpened += (_, _) => PodcastMediaOpened();
         RefreshPodcastShowPanel();
@@ -159,7 +161,10 @@ public partial class MainWindow
         var show = SelectedPodcastShow;
         PodcastShowTitle.Text = show?.Title ?? "Select a podcast";
         PodcastShowSummary.Text = show is null ? "Search for a show above or paste its RSS feed URL." : $"{show.Author}  •  {show.UnplayedCount} unplayed  •  {show.DownloadedCount} downloaded";
-        PodcastEpisodesGrid.ItemsSource = show is null ? null : PodcastEpisodeOrdering.Order(show.Episodes, oldest: false).ToList();
+        PodcastEpisodeView.Clear();
+        if (show is not null)
+            foreach (var episode in PodcastEpisodeOrdering.Order(show.Episodes, oldest: false))
+                PodcastEpisodeView.Add(episode);
         PodcastEmptyState.Visibility = show is null || show.Episodes.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         PodcastSyncCountBox.Text = show?.SyncEpisodeCount.ToString() ?? "3";
         PodcastSyncOrderCombo.SelectedIndex = show?.SyncOrder.Equals("Oldest", StringComparison.OrdinalIgnoreCase) == true ? 1 : 0;
