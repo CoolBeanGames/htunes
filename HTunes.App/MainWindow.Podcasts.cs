@@ -261,25 +261,31 @@ public partial class MainWindow
         if (sender is Button { DataContext: PodcastEpisode episode } && SelectedPodcastShow is { } show) await DownloadPodcastEpisodeAsync(show, episode);
     }
 
-    private async Task<bool> DownloadPodcastEpisodeAsync(PodcastShow show, PodcastEpisode episode)
+    private async Task<bool> DownloadPodcastEpisodeAsync(PodcastShow show, PodcastEpisode episode, CancellationToken cancellationToken = default, bool quiet = false)
     {
         if (podcastDownloads.TryGetValue(episode, out var pending)) return await pending;
-        var task = DownloadPodcastEpisodeCoreAsync(show, episode);
+        var task = DownloadPodcastEpisodeCoreAsync(show, episode, cancellationToken, quiet);
         podcastDownloads[episode] = task;
         try { return await task; }
         finally { podcastDownloads.Remove(episode); }
     }
 
-    private async Task<bool> DownloadPodcastEpisodeCoreAsync(PodcastShow show, PodcastEpisode episode)
+    // quiet: caller (a sync) owns the status line and will refresh the panel once at the end,
+    // so skip the per-episode UI churn that makes a multi-episode sync crawl.
+    private async Task<bool> DownloadPodcastEpisodeCoreAsync(PodcastShow show, PodcastEpisode episode, CancellationToken cancellationToken = default, bool quiet = false)
     {
         if (episode.IsDownloaded) return true;
         activePodcastDownloads++; UpdateBusyWorkspaces();
         try
         {
-            PodcastShowSummary.Text = $"Downloading {episode.Title}…";
-            await PodcastService.DownloadEpisodeAsync(show, episode, new Progress<double>(value => PodcastShowSummary.Text = $"Downloading {episode.Title}… {value:0}%"));
-            SavePodcastLibrary(); RefreshPodcastShowPanel(); return true;
+            if (!quiet) PodcastShowSummary.Text = $"Downloading {episode.Title}…";
+            var progress = quiet ? null : new Progress<double>(value => PodcastShowSummary.Text = $"Downloading {episode.Title}… {value:0}%");
+            await PodcastService.DownloadEpisodeAsync(show, episode, progress, cancellationToken);
+            SavePodcastLibrary();
+            if (!quiet) RefreshPodcastShowPanel();
+            return true;
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex) { DebugLog.Write("Podcast download", "Failed", ex); MessageBox.Show(this, $"Episode download failed.\n\n{ex.GetBaseException().Message}", "Download failed", MessageBoxButton.OK, MessageBoxImage.Warning); return false; }
         finally { activePodcastDownloads--; UpdateBusyWorkspaces(); }
     }
@@ -417,6 +423,7 @@ public partial class MainWindow
         if (isRenaming || isTagSaving || isSyncing || isReconcilingPlayCounts || currentDevice is null) return;
         var device = currentDevice;
         isSyncing = true; syncCancellation = new CancellationTokenSource(); var syncToken = syncCancellation.Token; deviceTimer.Stop(); SyncCurrentButton.IsEnabled = SyncAllButton.IsEnabled = EjectButton.IsEnabled = false; StopSyncButton.Visibility = Visibility.Visible; StopSyncButton.IsEnabled = true; SyncAllButton.Content = "Syncing…";
+        StartSyncAnimation(SyncGlyphSource.Podcast);
         UpdateBusyWorkspaces();
         try
         {
@@ -424,24 +431,27 @@ public partial class MainWindow
             if (!SettingsStore.Current.PodcastDownloadOnSync && selections.Any(selection => !selection.Episode.IsDownloaded))
                 throw new InvalidOperationException("Download the selected episodes first, or enable download-on-sync in Settings. No changes were made to the iPod.");
             if (!await EnsureIPodPreparedAsync(device)) return;
+            var toDownload = selections.Where(selection => !selection.Episode.IsDownloaded).ToList();
             var completed = 0;
-            foreach (var selection in selections)
+            foreach (var selection in toDownload)
             {
                 syncToken.ThrowIfCancellationRequested();
-                if (!selection.Episode.IsDownloaded && !await DownloadPodcastEpisodeAsync(selection.Show, selection.Episode))
+                DeviceDetailsText.Text = $"  •  Downloading episodes  ({completed + 1}/{toDownload.Count})";
+                if (!await DownloadPodcastEpisodeAsync(selection.Show, selection.Episode, syncToken, quiet: true))
                     throw new InvalidOperationException($"{selection.Episode.Title} could not be downloaded. No changes were made to the iPod.");
                 completed++;
-                DeviceDetailsText.Text = $"  •  Preparing podcasts  ({completed}/{selections.Count})";
             }
             var ready = selections.Where(selection => selection.Episode.IsDownloaded).ToList();
             syncToken.ThrowIfCancellationRequested();
-            var result = await Task.Run(() => PodcastIPodSyncService.Sync(device.RootPath, ready, PodcastShows.ToList(), mirrorSubscriptions), syncToken);
+            DeviceDetailsText.Text = "  •  Preparing podcasts";
+            var result = await Task.Run(() => PodcastIPodSyncService.Sync(device.RootPath, ready, PodcastShows.ToList(), mirrorSubscriptions, syncToken), syncToken);
+            RefreshPodcastShowPanel();
             await LoadIPodTracksAsync(device);
             DebugLog.Write("Podcast sync", result.Summary);
-            if (showSummary) MessageBox.Show(this, result.Summary, "Podcast sync complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            if (showSummary) MessageBox.Show(this, result.Summary, result.Cancelled ? "Sync stopped" : "Podcast sync complete", MessageBoxButton.OK, MessageBoxImage.Information);
         }
-        catch (OperationCanceledException) { DebugLog.Write("Podcast sync", "Cancelled by user"); if (showSummary) MessageBox.Show(this, "Podcast sync stopped safely.", "Sync stopped"); }
+        catch (OperationCanceledException) { DebugLog.Write("Podcast sync", "Cancelled by user"); RefreshPodcastShowPanel(); if (showSummary) MessageBox.Show(this, "Podcast sync stopped. Episodes already copied were kept.", "Sync stopped"); }
         catch (Exception ex) { DebugLog.Write("Podcast sync", "Failed", ex); MessageBox.Show(this, $"Podcast sync failed.\n\n{ex.GetBaseException().Message}", "Podcast sync failed", MessageBoxButton.OK, MessageBoxImage.Error); }
-        finally { isSyncing = false; syncCancellation?.Dispose(); syncCancellation = null; StopSyncButton.Visibility = Visibility.Collapsed; SyncAllButton.Content = "Sync all"; deviceTimer.Start(); RefreshDevice(); UpdateDeviceStripMode(); UpdateBusyWorkspaces(); }
+        finally { isSyncing = false; syncCancellation?.Dispose(); syncCancellation = null; StopSyncButton.Visibility = Visibility.Collapsed; SyncAllButton.Content = "Sync all"; StopSyncAnimation(); deviceTimer.Start(); RefreshDevice(); UpdateDeviceStripMode(); UpdateBusyWorkspaces(); }
     }
 }

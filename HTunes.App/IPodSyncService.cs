@@ -12,7 +12,11 @@ namespace HTunes.App;
 internal sealed record SyncProgress(int Completed, int Total, string Message);
 internal sealed record SyncResult(int Added, int Replaced, int AlreadyPresent, int Unsupported, int Missing, int NoSpace)
 {
-    public string Summary => $"Added {Added} song{(Added == 1 ? "" : "s")}, replaced {Replaced}. " +
+    // Set when the user stopped the sync: the songs copied so far were kept and committed.
+    public bool Cancelled { get; init; }
+
+    public string Summary => (Cancelled ? "Sync stopped. " : "") +
+        $"Added {Added} song{(Added == 1 ? "" : "s")}, replaced {Replaced}. " +
         $"{AlreadyPresent} already current on iPod, {Unsupported} unsupported, {Missing} missing, {NoSpace} skipped for space.";
 }
 
@@ -51,7 +55,8 @@ internal static class IPodSyncService
         var alreadyPresent = 0;
         foreach (var source in eligible)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+                return new SyncResult(0, 0, alreadyPresent, unsupported, missing, 0) { Cancelled = true };
             existingByMarker.TryGetValue(source.Id, out var existing);
             var markerMatched = existing is not null;
             var desiredKey = TrackIdentity.Key(source.Title, source.Artist, source.Album, source.TrackNumber);
@@ -79,8 +84,21 @@ internal static class IPodSyncService
             }
             var fingerprint = DesiredFingerprint(source, preset);
             var knownFingerprint = source.SyncedIPodFingerprints?.GetValueOrDefault(deviceId);
+            var fingerprintCurrent = FingerprintMatchesLastSync(source, deviceId, fingerprint);
             var retaggedLegacy = existing is not null && !markerMatched && knownFingerprint is null && source.MetadataManagedByLibrary;
-            if (existing is null || retaggedLegacy || knownFingerprint is not null && knownFingerprint != fingerprint || NeedsReplacement(rootPath, existing, source, preset))
+            bool needsSync;
+            if (existing is null)
+                needsSync = true;
+            else if (fingerprintCurrent)
+                // The last sync to THIS device already carried this exact track/file/artwork state.
+                // Trust the fingerprint and leave the iPod copy alone; only recopy if its media file
+                // has since disappeared from the device. Do NOT fall through to the NeedsReplacement
+                // heuristic here - its metadata/bitrate probes throw false positives that were causing
+                // unchanged tracks to be replaced on every sync.
+                needsSync = !IPodMediaPresent(rootPath, existing);
+            else
+                needsSync = retaggedLegacy || knownFingerprint is not null || NeedsReplacement(rootPath, existing, source, preset);
+            if (needsSync)
                 candidates.Add(new SyncCandidate(source, existing, fingerprint));
             else { alreadyPresent++; current.Add((source, fingerprint)); }
         }
@@ -102,11 +120,13 @@ internal static class IPodSyncService
         var temporaryDirectory = Path.Combine(Path.GetTempPath(), $"hTunes-transcode-{Guid.NewGuid():N}");
         Clickwheel.IPodBackup.EnableBackups = false;
         ipod.AcquireLock();
+        var cancelled = false;
         try
         {
             for (var index = 0; index < candidates.Count; index++)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                // Stop cleanly after the current file: the songs already copied are committed below.
+                if (cancellationToken.IsCancellationRequested) { cancelled = true; break; }
                 var candidate = candidates[index];
                 var source = candidate.Source;
                 var syncPath = source.FilePath;
@@ -168,7 +188,7 @@ internal static class IPodSyncService
                 ipod.SaveChanges();
             }
             foreach (var item in current.Concat(synced)) RememberFingerprint(item.Source, deviceId, item.Fingerprint);
-            return new SyncResult(added.Count - replaced, replaced, alreadyPresent, unsupported, missing, noSpace);
+            return new SyncResult(added.Count - replaced, replaced, alreadyPresent, unsupported, missing, noSpace) { Cancelled = cancelled };
         }
         catch
         {
@@ -199,6 +219,15 @@ internal static class IPodSyncService
             try { if (Directory.Exists(temporaryDirectory)) Directory.Delete(temporaryDirectory, true); } catch { }
         }
     }
+
+    // True when the track's current tag/file/artwork state is byte-for-byte the state that was
+    // last committed to this specific device. When this holds, the iPod copy is up to date and
+    // must not be re-copied - the fingerprint is authoritative, not the NeedsReplacement heuristic.
+    internal static bool FingerprintMatchesLastSync(Track source, string deviceId, string fingerprint) =>
+        source.SyncedIPodFingerprints?.GetValueOrDefault(deviceId) is { } known && known == fingerprint;
+
+    private static bool IPodMediaPresent(string rootPath, IPodTrack existing) =>
+        File.Exists(ResolveIPodPath(rootPath, existing.FilePath));
 
     private static bool NeedsReplacement(string rootPath, IPodTrack existing, Track source, TranscodePreset preset)
     {

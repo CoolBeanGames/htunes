@@ -147,26 +147,32 @@ internal sealed class TagBatchEdit
     private readonly List<Entry> entries;
     private readonly TagPatch patch;
     private readonly Action persist;
-    private TagBatchEdit(List<Entry> entries, TagPatch patch, Action persist) { this.entries = entries; this.patch = patch; this.persist = persist; }
+    private TagBatchEdit(List<Entry> entries, TagPatch patch, Action persist, IReadOnlyList<Track> missingFiles)
+    { this.entries = entries; this.patch = patch; this.persist = persist; MissingFiles = missingFiles; }
+
+    // Tracks whose audio file was gone from disk during a write-to-files edit. They are skipped
+    // rather than aborting the whole batch; the caller drops these from the library.
+    public IReadOnlyList<Track> MissingFiles { get; }
 
     public static TagBatchEdit Apply(IReadOnlyList<Track> tracks, TagPatch patch, bool writeFiles, string artworkDirectory, Action persist)
     {
         patch.Validate();
         if (tracks.Count == 0 || !patch.HasChanges) throw new ArgumentException("Select tracks and change at least one field.");
         var entries = new List<Entry>();
+        var missing = new List<Track>();
         foreach (var track in tracks.Distinct())
         {
-            var before = Values.Read(track); var after = before.Change(patch, artworkDirectory);
             FileTags? disk = null;
             if (writeFiles)
             {
-                if (!File.Exists(track.FilePath)) throw new FileNotFoundException("Audio file missing; disable 'Write tags to audio files' for a library-only edit.", track.FilePath);
+                if (!File.Exists(track.FilePath)) { missing.Add(track); continue; }
                 if ((File.GetAttributes(track.FilePath) & FileAttributes.ReadOnly) != 0) throw new IOException("Audio file is read-only: " + track.FilePath);
                 disk = FileTags.Read(track.FilePath);
             }
+            var before = Values.Read(track); var after = before.Change(patch, artworkDirectory);
             entries.Add(new(track, before, after, disk, disk?.Change(after, patch)));
         }
-        var edit = new TagBatchEdit(entries, patch, persist); edit.Redo(); return edit;
+        var edit = new TagBatchEdit(entries, patch, persist, missing); edit.Redo(); return edit;
     }
 
     public void Undo() => Set(false);

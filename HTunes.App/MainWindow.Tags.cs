@@ -194,9 +194,16 @@ public partial class MainWindow
         try
         {
             var edit = await Task.Run(() => TagBatchEdit.Apply(selected, patch, writeFiles, Path.Combine(SettingsStore.DataDirectory, "artwork"), () => Dispatcher.Invoke(SaveLibrary)));
-            RecordEdit("Tag selected tracks", edit.Undo, edit.Redo);
+            var removed = DropMissingTrackEntries(edit.MissingFiles);
+            if (removed is { } drop)
+                RecordEdit("Tag selected tracks", () => { edit.Undo(); drop.Undo(); }, () => { edit.Redo(); drop.Redo(); });
+            else
+                RecordEdit("Tag selected tracks", edit.Undo, edit.Redo);
             LoadTagInspector(); RefreshBrowser(); RefreshTagLibrary();
-            TagStatus.Text = $"Saved {selected.Count:N0} tracks to the library{(writeFiles ? " and audio files" : " only")}. Undo is available in Edit (Ctrl+Z).";
+            var saved = selected.Count - edit.MissingFiles.Count;
+            TagStatus.Text = $"Saved {saved:N0} track{(saved == 1 ? "" : "s")} to the library{(writeFiles ? " and audio files" : " only")}." +
+                (edit.MissingFiles.Count > 0 ? $" Removed {edit.MissingFiles.Count:N0} track{(edit.MissingFiles.Count == 1 ? "" : "s")} with missing files from the library." : "") +
+                " Undo is available in Edit (Ctrl+Z).";
             DebugLog.Write("Tag editor", $"Saved tracks={selected.Count}; writeFiles={writeFiles}; artwork={patch.ChangeArtwork || patch.ResizeArtwork}");
         }
         catch (Exception ex)
@@ -206,6 +213,38 @@ public partial class MainWindow
             MessageBox.Show(this, ex.ToString(), "Could not save tags", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally { isTagSaving = false; if (initializeServices) RefreshDevice(); UpdateBusyWorkspaces(); }
+    }
+
+    // Tracks whose audio file has vanished from disk can't be tagged or synced; drop those
+    // stale library entries (and their playlist references) instead of failing the whole
+    // operation. Returns an undo/redo pair, or null when nothing was removed.
+    private (Action Undo, Action Redo)? DropMissingTrackEntries(IReadOnlyList<Track> missing)
+    {
+        if (missing.Count == 0) return null;
+        var ids = missing.Select(track => track.Id).ToHashSet();
+        var tracksBefore = allTracks.ToList();
+        var membershipsBefore = Playlists.ToDictionary(playlist => playlist, playlist => playlist.TrackIds.ToList());
+        allTracks.RemoveAll(track => ids.Contains(track.Id));
+        foreach (var playlist in Playlists) playlist.TrackIds.RemoveAll(ids.Contains);
+        var tracksAfter = allTracks.ToList();
+        var membershipsAfter = Playlists.ToDictionary(playlist => playlist, playlist => playlist.TrackIds.ToList());
+        SaveLibrary();
+        return (
+            () => { allTracks = tracksBefore.ToList(); foreach (var (playlist, members) in membershipsBefore) playlist.TrackIds = members.ToList(); SaveLibrary(); },
+            () => { allTracks = tracksAfter.ToList(); foreach (var (playlist, members) in membershipsAfter) playlist.TrackIds = members.ToList(); SaveLibrary(); });
+    }
+
+    // Shared entry point for auto-tag and sync: remove tracks whose audio file no longer
+    // exists on disk from the library, record the removal on the undo stack, and refresh the
+    // browser. Returns how many entries were dropped.
+    private int RemoveMissingFilesFromLibrary(IReadOnlyList<Track> missing, string context)
+    {
+        var present = missing.Where(track => allTracks.Contains(track)).Distinct().ToList();
+        if (DropMissingTrackEntries(present) is not { } drop) return 0;
+        RecordEdit($"Remove {present.Count} missing file{(present.Count == 1 ? "" : "s")}", drop.Undo, drop.Redo);
+        DebugLog.Write("Library", $"Removed {present.Count} track(s) with missing audio files from the library during {context}");
+        RefreshBrowser();
+        return present.Count;
     }
 
     private async void TagAuto_Click(object sender, RoutedEventArgs e)
@@ -218,6 +257,11 @@ public partial class MainWindow
         var artistGenres = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var matched = 0; var skipped = 0; var failed = 0; var rateLimited = 0;
         string? lastError = null;
+        // A track whose audio file has vanished can't be looked up - drop it from the library
+        // rather than counting it as a silent failure.
+        var removedMissing = RemoveMissingFilesFromLibrary(selected.Where(track => !File.Exists(track.FilePath)).ToList(), "auto-tag");
+        selected = selected.Where(track => File.Exists(track.FilePath)).ToList();
+        var vanished = new List<Track>();
         isTagSaving = true; UpdateBusyWorkspaces();
         try
         {
@@ -236,6 +280,7 @@ public partial class MainWindow
                         (force || track.Genre.Equals("Music", StringComparison.OrdinalIgnoreCase) || track.Genre.StartsWith("Unknown", StringComparison.OrdinalIgnoreCase))) fields["Genre"] = sharedGenre;
                     var patch = new TagPatch(fields, MarkAutoTagged: true);
                     var edit = await Task.Run(() => TagBatchEdit.Apply([track], patch, writeFiles, Path.Combine(SettingsStore.DataDirectory, "artwork"), () => Dispatcher.Invoke(SaveLibrary)));
+                    if (edit.MissingFiles.Count > 0) { vanished.Add(track); continue; }
                     edits.Add(edit); matched++;
                 }
                 catch (MusicBrainzRateLimitException ex)
@@ -251,10 +296,12 @@ public partial class MainWindow
                     DebugLog.Write("Auto tag", $"Failed track={track.Id}", ex);
                 }
             }
+            removedMissing += RemoveMissingFilesFromLibrary(vanished, "auto-tag");
             if (edits.Count > 0)
                 RecordEdit("Auto-tag selected tracks", () => edits.AsEnumerable().Reverse().ToList().ForEach(edit => edit.Undo()), () => edits.ForEach(edit => edit.Redo()));
             RefreshBrowser(); RefreshTagLibrary();
             var report = $"Auto-tag complete: {matched} matched, {skipped} no confident match, {failed} failed";
+            if (removedMissing > 0) report += $", {removedMissing} removed (missing file)";
             if (rateLimited > 0) report += $" ({rateLimited} of them MusicBrainz rate-limits — it allows ~1 request/second per IP; tag fewer tracks at a time or wait a minute)";
             else if (failed > 0 && lastError is not null) report += $". Last error: {lastError}";
             else report += ". MusicBrainz allows ~1 request/second, so large selections take a while.";

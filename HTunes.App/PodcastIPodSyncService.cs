@@ -8,7 +8,11 @@ namespace HTunes.App;
 
 internal sealed record PodcastSyncResult(int Added, int Removed, int AlreadyPresent, int Missing)
 {
-    public string Summary => $"Added {Added} podcast episode{(Added == 1 ? "" : "s")}, removed {Removed}, " +
+    // Set when the user stopped the sync: what was copied before that point was kept.
+    public bool Cancelled { get; init; }
+
+    public string Summary => (Cancelled ? "Sync stopped. " : "") +
+        $"Added {Added} podcast episode{(Added == 1 ? "" : "s")}, removed {Removed}, " +
         $"{AlreadyPresent} already on the iPod, and {Missing} could not be copied.";
 }
 
@@ -18,7 +22,7 @@ internal static class PodcastIPodSyncService
 {
     private sealed record RemovedMedia(string OriginalPath, string BackupPath);
 
-    public static PodcastSyncResult Sync(string rootPath, IReadOnlyCollection<PodcastEpisodeSelection> selections, IReadOnlyCollection<PodcastShow> subscriptions, bool mirrorSubscriptions)
+    public static PodcastSyncResult Sync(string rootPath, IReadOnlyCollection<PodcastEpisodeSelection> selections, IReadOnlyCollection<PodcastShow> subscriptions, bool mirrorSubscriptions, CancellationToken cancellationToken = default)
     {
         var ipod = IPod.GetiPodByDrive(rootPath, IPodLoadAction.NoSync);
         ipod.AssertIsWritable();
@@ -26,6 +30,10 @@ internal static class PodcastIPodSyncService
         var temporaryDirectory = Path.Combine(Path.GetTempPath(), $"hTunes-podcast-sync-{Guid.NewGuid():N}");
         var removedMedia = new List<RemovedMedia>();
         var addedTracks = new List<IPodTrack>();
+        var removed = 0;
+        var alreadyPresent = 0;
+        var missing = 0;
+        var cancelled = false;
         Clickwheel.IPodBackup.EnableBackups = false;
         ipod.AcquireLock();
         try
@@ -33,7 +41,6 @@ internal static class PodcastIPodSyncService
             var tracks = Tracks(ipod);
             var desired = selections.Select(selection => EpisodeKey(selection.Show.Title, selection.Episode)).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var subscribedTitles = subscriptions.Select(show => show.Title).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var removed = 0;
             if (mirrorSubscriptions)
             {
                 foreach (var track in tracks.Where(track => IsPodcast(track) && subscribedTitles.Contains(track.Album) && !desired.Contains(TrackKey(track))).ToList())
@@ -56,10 +63,9 @@ internal static class PodcastIPodSyncService
                     podcastPlaylist.AddTrack(track);
                 }
             }
-            var alreadyPresent = 0;
-            var missing = 0;
             foreach (var selection in selections)
             {
+                if (cancellationToken.IsCancellationRequested) { cancelled = true; break; }
                 var episode = selection.Episode;
                 var show = selection.Show;
                 var currentTracks = Tracks(ipod);
@@ -79,7 +85,7 @@ internal static class PodcastIPodSyncService
                 addedTracks.Add(added);
             }
             ipod.SaveChanges();
-            return new PodcastSyncResult(addedTracks.Count, removed, alreadyPresent, missing);
+            return new PodcastSyncResult(addedTracks.Count, removed, alreadyPresent, missing) { Cancelled = cancelled };
         }
         catch
         {

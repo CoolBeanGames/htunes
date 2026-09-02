@@ -33,9 +33,14 @@ internal static partial class Program
             CheckSinglePanelNavigation();
             CheckYtDlp();
             CheckTagEditor();
+            CheckMissingFileRemoval();
+            CheckTabSelectAll();
+            CheckTabProcessingPulse();
+            CheckSyncCancellationContract();
+            CheckSyncGlyphPlacement();
             CheckRenameEditor();
             if (args is ["--check-ytdlp-tools", var yt, var ffmpeg]) CheckLocalYtDlp(yt, ffmpeg);
-            Console.WriteLine("PASS: menus/history, settings, import safety, podcasts, navigation, yt-dlp, batch tags, and Rename operations/rollback/scope/UI.");
+            Console.WriteLine("PASS: menus/history, settings, import safety, podcasts, navigation, yt-dlp, batch tags, missing-file removal, tab select-all, tab processing pulse, sync-stop contract, sync glyph placement, and Rename operations/rollback/scope/UI.");
             return 0;
         }
         catch (Exception ex)
@@ -124,6 +129,16 @@ internal static partial class Program
             fingerprint = IPodSyncService.DesiredFingerprint(track, preset);
             track.AlbumArtist = "Artist Sound Team";
             Require(IPodSyncService.DesiredFingerprint(track, preset) != fingerprint, "Album-artist edits must make an existing iPod copy eligible for replacement.");
+
+            // An unchanged track that already carries this device's fingerprint must be recognised as
+            // current so "Sync music" stops replacing everything on every run.
+            fingerprint = IPodSyncService.DesiredFingerprint(track, preset);
+            Require(!IPodSyncService.FingerprintMatchesLastSync(track, "serial:TESTPOD", fingerprint), "A track never synced to a device is not current on it.");
+            track.SyncedIPodFingerprints["serial:TESTPOD"] = fingerprint;
+            Require(IPodSyncService.FingerprintMatchesLastSync(track, "serial:TESTPOD", fingerprint), "A track whose fingerprint matches the last sync must count as current (no replacement).");
+            Require(!IPodSyncService.FingerprintMatchesLastSync(track, "serial:OTHERPOD", fingerprint), "Being current on one device must not imply being current on another.");
+            track.Genre = "Jazz";
+            Require(!IPodSyncService.FingerprintMatchesLastSync(track, "serial:TESTPOD", IPodSyncService.DesiredFingerprint(track, preset)), "Editing a synced track must drop it out of the current state.");
             Require(MusicBrainzTagService.SimplifyGenre(["hip hop", "r&b"], "", "") == "Rap" &&
                 MusicBrainzTagService.SimplifyGenre(["video game soundtrack", "metal"], "", "") == "Game Music" &&
                 MusicBrainzTagService.SimplifyGenre([], "My Chemical Romance", "") == "Emo", "Auto-tag genre policy must apply the requested broad categories and soundtrack priority.");
@@ -173,6 +188,113 @@ internal static partial class Program
     private static void Require(bool condition, string message)
     {
         if (!condition) throw new InvalidOperationException(message);
+    }
+
+    private static void CheckSyncGlyphPlacement()
+    {
+        // The three sync glyphs must stay clear of the transcode combo / sync buttons at any
+        // strip width, or the right-hand (podcast) glyph vanishes behind them.
+        var window = new HTunes.App.MainWindow(false);
+        const BindingFlags F = BindingFlags.NonPublic | BindingFlags.Instance;
+        object? Call(string n, params object[] a) => typeof(HTunes.App.MainWindow).GetMethod(n, F)!.Invoke(window, a);
+        TextBlock Glyph(string n) => (TextBlock)typeof(HTunes.App.MainWindow).GetField(n, F)!.GetValue(window)!;
+        T Ctl<T>(string n) where T : FrameworkElement => (T)window.FindName(n);
+        try
+        {
+            var root = (Grid)window.Content;
+            Ctl<RadioButton>("IPodTab").Visibility = Visibility.Visible;
+            Ctl<Button>("StopSyncButton").Visibility = Visibility.Visible;
+            foreach (var width in new double[] { 980, 1280, 1600 })
+            {
+                root.Measure(new Size(width, 320)); root.Arrange(new Rect(0, 0, width, 320)); root.UpdateLayout();
+                var layer = Ctl<Canvas>("SyncAnimationLayer");
+                Require(!layer.IsHitTestVisible, "The animation layer must never intercept clicks on the device strip.");
+                Call("StartSyncAnimation", (SyncGlyphSource)1); // podcast
+                var comboX = Ctl<FrameworkElement>("TranscodeComboBox").TransformToVisual(layer).Transform(default).X;
+                var podRight = Canvas.GetLeft(Glyph("syncPodGlyph")) + Glyph("syncPodGlyph").DesiredSize.Width;
+                Require(podRight <= comboX, $"At {width}px the podcast glyph ({podRight:0}) must stay left of the transcode combo ({comboX:0}).");
+                Require(Canvas.GetLeft(Glyph("syncMusicGlyph")) >= 0, $"At {width}px the music glyph must stay on the strip.");
+                Call("StopSyncAnimation");
+            }
+
+            root.Measure(new Size(1280, 320)); root.Arrange(new Rect(0, 0, 1280, 320)); root.UpdateLayout();
+            var canvas = Ctl<Canvas>("SyncAnimationLayer");
+            Color ParticleColor(int source)
+            {
+                Call("StartSyncAnimation", (SyncGlyphSource)source);
+                Call("SpawnSyncParticles");
+                var dot = canvas.Children.OfType<System.Windows.Shapes.Ellipse>().Last();
+                var color = ((SolidColorBrush)dot.Fill).Color;
+                Call("StopSyncAnimation");
+                return color;
+            }
+            var musicColor = ParticleColor(0);
+            var podcastColor = ParticleColor(1);
+            Require(musicColor.B > musicColor.R && podcastColor.R > podcastColor.B && musicColor != podcastColor,
+                "Music particles must read blue and podcast particles red so the two syncs look different.");
+        }
+        finally { window.Close(); }
+    }
+
+    private static void CheckSyncCancellationContract()
+    {
+        // Stopping a sync keeps what was copied and is reported as a stop, not a failure.
+        var asm = typeof(HTunes.App.MainWindow).Assembly;
+        object Make(string typeName, params object[] args) =>
+            Activator.CreateInstance(asm.GetType("HTunes.App." + typeName)!, BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance, null, args, null)!;
+        string Summary(object r) => (string)r.GetType().GetProperty("Summary")!.GetValue(r)!;
+        void MarkCancelled(object r) => r.GetType().GetProperty("Cancelled")!.SetValue(r, true); // init-only, settable via reflection
+
+        var music = Make("SyncResult", 3, 0, 0, 0, 0, 0);
+        Require(!(bool)music.GetType().GetProperty("Cancelled")!.GetValue(music)! && Summary(music).StartsWith("Added 3 songs"),
+            "A completed music sync is not marked cancelled and its summary is unchanged.");
+        MarkCancelled(music);
+        Require(Summary(music).StartsWith("Sync stopped."), "A stopped music sync summary leads with 'Sync stopped.'");
+
+        var pod = Make("PodcastSyncResult", 2, 0, 1, 0);
+        Require(!Summary(pod).StartsWith("Sync stopped."), "A normal podcast sync summary is unchanged.");
+        MarkCancelled(pod);
+        Require(Summary(pod).StartsWith("Sync stopped."), "A stopped podcast sync summary leads with 'Sync stopped.'");
+    }
+
+    private static void CheckTabProcessingPulse()
+    {
+        var window = new HTunes.App.MainWindow(false);
+        const BindingFlags F = BindingFlags.NonPublic | BindingFlags.Instance;
+        void SetFlag(string name, bool value) => typeof(HTunes.App.MainWindow).GetField(name, F)!.SetValue(window, value);
+        void Update() => typeof(HTunes.App.MainWindow).GetMethod("UpdateTabProcessingIndicators", F)!.Invoke(window, null);
+        var isActive = typeof(HTunes.App.MainWindow).Assembly.GetType("HTunes.App.TabPulse")!.GetMethod("GetIsActive")!;
+        bool Pulsing(string tab) => (bool)isActive.Invoke(null, [window.FindName(tab)])!;
+        try
+        {
+            Update();
+            Require(!Pulsing("TagTab") && !Pulsing("PodcastsTab") && !Pulsing("IPodTab"), "Idle tabs must not pulse.");
+            SetFlag("isTagSaving", true); Update();
+            Require(Pulsing("TagTab") && !Pulsing("IPodTab"), "Writing tags must pulse only the Tag tab.");
+            SetFlag("isTagSaving", false); SetFlag("isSyncing", true); Update();
+            Require(Pulsing("IPodTab") && !Pulsing("TagTab"), "Syncing must pulse only the iPod tab.");
+            SetFlag("isSyncing", false); typeof(HTunes.App.MainWindow).GetField("activePodcastDownloads", F)!.SetValue(window, 2); Update();
+            Require(Pulsing("PodcastsTab") && !Pulsing("IPodTab"), "Downloading episodes must pulse only the Podcasts tab.");
+            typeof(HTunes.App.MainWindow).GetField("activePodcastDownloads", F)!.SetValue(window, 0); Update();
+            Require(!Pulsing("PodcastsTab"), "The pulse must clear when the work finishes.");
+        }
+        finally { window.Close(); }
+    }
+
+    private static void CheckTabSelectAll()
+    {
+        var method = typeof(HTunes.App.MainWindow).Assembly.GetType("HTunes.App.TextBoxBehaviors")!
+            .GetMethod("ShouldSelectAllOnFocus", BindingFlags.NonPublic | BindingFlags.Static)!;
+        bool Should(TextBox box, bool tabHeld, bool hadPreviousFocus) => (bool)method.Invoke(null, [box, tabHeld, hadPreviousFocus])!;
+
+        var filled = new TextBox { Text = "Existing value" };
+        Require(Should(filled, true, true), "Tabbing into a field with text must select all of it.");
+        Require(!Should(filled, false, true), "A mouse click (no Tab held) must leave the caret where it landed.");
+        Require(!Should(filled, true, false), "The first focus when a window opens must not select all.");
+        Require(!Should(new TextBox { Text = "" }, true, true), "An empty field has nothing to select.");
+        Require(!Should(new TextBox { Text = "x", IsReadOnly = true }, true, true), "Read-only fields must not be touched.");
+        Require(!Should(new TextBox { Text = "x", IsEnabled = false }, true, true), "Disabled fields must not be touched.");
+        Require(!Should(new TextBox { Text = "line one\nline two", AcceptsReturn = true }, true, true), "Multi-line boxes (link lists) must not select-all on Tab.");
     }
 
     private static void CheckSettings()

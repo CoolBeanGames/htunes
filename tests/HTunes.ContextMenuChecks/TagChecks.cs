@@ -46,8 +46,11 @@ internal static partial class Program
             Require(first.Album == beforeFailure && second.Album == "After", "A failed save restores all in-memory records.");
             using (var media = TagLib.File.Create(first.FilePath)) Require(media.Tag.Album == "After", "A failed save rolls back already-written physical tags.");
             var missing = new Track { Title = "Missing", FilePath = Path.Combine(directory, "missing.wav") };
-            ExpectFailure(() => TagBatchEdit.Apply([first, missing], new TagPatch(new Dictionary<string, string> { ["Album"] = "No partial writes" }), true, directory, () => { }), "Missing files must fail preflight before editing any file.");
-            Require(first.Album == "After", "Failed preflight leaves the batch unchanged.");
+            var partial = TagBatchEdit.Apply([first, missing], new TagPatch(new Dictionary<string, string> { ["Album"] = "Skip missing" }), true, directory, () => { });
+            Require(first.Album == "Skip missing", "A vanished audio file is skipped so the rest of the write-to-files batch still applies.");
+            Require(partial.MissingFiles.Count == 1 && ReferenceEquals(partial.MissingFiles[0], missing), "The batch reports missing-file tracks so the caller can drop them from the library.");
+            partial.Undo();
+            Require(first.Album == "After", "Undo of a partial batch restores the tracks that were written.");
             File.SetAttributes(second.FilePath, File.GetAttributes(second.FilePath) | FileAttributes.ReadOnly);
             try
             {
@@ -60,6 +63,43 @@ internal static partial class Program
             foreach (var invalid in new[] { "-1", "abc", "10000" }) ExpectFailure(() => new TagPatch(new Dictionary<string, string> { ["Year"] = invalid }).Validate(), "Invalid years must be rejected.");
             ExpectFailure(() => new TagPatch(new Dictionary<string, string>(), ResizeArtwork: true, Width: 0).Validate(), "Invalid artwork dimensions must be rejected.");
             CheckTagWorkspace(directory, artwork);
+        });
+    }
+
+    // Auto-tag and sync must drop library entries whose audio file has vanished from disk
+    // instead of silently failing on them, and the removal must be undoable.
+    private static void CheckMissingFileRemoval()
+    {
+        InTemporaryDirectory(directory =>
+        {
+            var window = new MainWindow(false, Path.Combine(directory, "library.json"));
+            const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
+            try
+            {
+                var present = new Track { Title = "Here", FilePath = Path.Combine(directory, "here.wav") };
+                var gone = new Track { Title = "Gone", FilePath = Path.Combine(directory, "gone.wav") };
+                File.WriteAllBytes(present.FilePath, SyntheticWav());
+                var tracks = new List<Track> { present, gone };
+                typeof(MainWindow).GetField("allTracks", flags)!.SetValue(window, tracks);
+                var playlist = new Playlist { Name = "Mix", TrackIds = [present.Id, gone.Id] };
+                window.Playlists.Add(playlist);
+
+                var remove = typeof(MainWindow).GetMethod("RemoveMissingFilesFromLibrary", flags)!;
+                var removed = (int)remove.Invoke(window, [new List<Track> { gone }, "test"])!;
+                Require(removed == 1, "RemoveMissingFilesFromLibrary must report how many entries it dropped.");
+                var live = (List<Track>)typeof(MainWindow).GetField("allTracks", flags)!.GetValue(window)!;
+                Require(live.Count == 1 && ReferenceEquals(live[0], present), "The vanished track must leave the library, the present one must stay.");
+                Require(playlist.TrackIds.Count == 1 && playlist.TrackIds[0] == present.Id, "The vanished track must also leave every playlist.");
+
+                var history = typeof(MainWindow).GetField("editHistory", flags)!.GetValue(window)!;
+                Require((bool)history.GetType().GetProperty("CanUndo")!.GetValue(history)!, "The missing-file removal must be recorded on the undo stack.");
+                history.GetType().GetMethod("Undo")!.Invoke(history, null);
+                live = (List<Track>)typeof(MainWindow).GetField("allTracks", flags)!.GetValue(window)!;
+                Require(live.Count == 2 && playlist.TrackIds.Count == 2, "Undo must restore the removed track and its playlist membership.");
+
+                Require((int)remove.Invoke(window, [new List<Track>(), "test"])! == 0, "Removing nothing must be a no-op.");
+            }
+            finally { window.Close(); }
         });
     }
 

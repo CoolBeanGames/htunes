@@ -51,9 +51,10 @@ public partial class MainWindow : Window
     {
         this.initializeServices = initializeServices;
         if (!initializeServices && isolatedLibraryFile is not null) dataFile = Path.GetFullPath(isolatedLibraryFile);
+        TextBoxBehaviors.InstallTabSelectAll();
         InitializeComponent(); DataContext = this;
         if (initializeServices) { LoadPreferences(); LoadLibrary(); }
-        InitializePodcastUi(initializeServices); InitializeContextMenus(); InitializeTagEditor(); InitializeRenameEditor(); InitializeColumnSorting(); InitializeDownloadOverrides(); InitializeTopMenus(); InitializeNavigation(); RefreshBrowser();
+        InitializePodcastUi(initializeServices); InitializeContextMenus(); InitializeTagEditor(); InitializeRenameEditor(); InitializeColumnSorting(); InitializeDownloadOverrides(); InitializeTopMenus(); InitializeNavigation(); InitializeSyncAnimation(); RefreshBrowser();
         if (!initializeServices) return;
         RefreshDevice();
         player.MediaEnded += (_, _) => { if (currentPodcastEpisode is not null) PodcastPlaybackEnded(); else if (repeatPlayback) { player.Position = TimeSpan.Zero; player.Play(); } else NextTrack(); };
@@ -754,7 +755,12 @@ public partial class MainWindow : Window
         if (lastMusicSyncCompleted && currentDevice is not null) await SyncAllPodcastsAsync();
     }
 
-    private void StopSync_Click(object sender, RoutedEventArgs e) { StopSyncButton.IsEnabled = false; syncCancellation?.Cancel(); DeviceDetailsText.Text = "  •  Stopping safely after the current file…"; }
+    private void StopSync_Click(object sender, RoutedEventArgs e)
+    {
+        StopSyncButton.IsEnabled = false;
+        try { syncCancellation?.Cancel(); } catch (ObjectDisposedException) { }
+        DeviceDetailsText.Text = "  •  Stopping safely after the current file…";
+    }
 
     private void UpdateDeviceStripMode()
     {
@@ -775,6 +781,9 @@ public partial class MainWindow : Window
         var requestedIds = ids.ToHashSet();
         var requested = allTracks.Where(t => requestedIds.Contains(t.Id)).ToList();
         if (requested.Count == 0 && playlist is null) { if (showSummary) MessageBox.Show(this, "There are no library tracks in this selection.", "Nothing to sync"); return; }
+        // Drop entries whose audio file has vanished from disk instead of silently skipping them.
+        var removedMissing = RemoveMissingFilesFromLibrary(requested.Where(track => !File.Exists(track.FilePath)).ToList(), "sync");
+        if (removedMissing > 0) requested = requested.Where(track => File.Exists(track.FilePath)).ToList();
         var device = currentDevice;
         var preset = TranscodePresets.Get(TranscodeComboBox.SelectedValue as string);
         lastMusicSyncCompleted = false; isSyncing = true; syncCancellation = new CancellationTokenSource(); var syncToken = syncCancellation.Token; deviceTimer.Stop();
@@ -782,6 +791,7 @@ public partial class MainWindow : Window
         SyncCurrentButton.IsEnabled = SyncAllButton.IsEnabled = EjectButton.IsEnabled = false; StopSyncButton.Visibility = Visibility.Visible; StopSyncButton.IsEnabled = true;
         TranscodeComboBox.IsEnabled = false;
         SyncAllButton.Content = "Syncing…";
+        StartSyncAnimation(SyncGlyphSource.Music);
         try
         {
             DebugLog.Write("Music sync", $"Starting {requested.Count} tracks; randomFill={randomFill}; preset={TranscodeComboBox.SelectedValue}");
@@ -792,6 +802,15 @@ public partial class MainWindow : Window
                 : await Task.Run(() => IPodSyncService.Sync(device.RootPath, requested, allTracks, randomFill, preset, progress, syncToken), syncToken);
             SaveLibrary(); // Persist per-device sync fingerprints/markers before any following playlist operation.
             string? playlistSummary = null;
+            if (result.Cancelled)
+            {
+                // Don't start playlist reconciliation after a stop - just show what made it across.
+                if (IPodDetector.FindConnected() is { } stoppedDevice) { currentDevice = stoppedDevice; await LoadIPodTracksAsync(stoppedDevice); }
+                DebugLog.Write("Music sync", result.Summary);
+                lastMusicSyncCompleted = false;
+                if (showSummary) MessageBox.Show(this, result.Summary, "Sync stopped", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
             if (playlist is not null)
             {
                 DeviceDetailsText.Text = $"  •  Updating playlist {playlist.Name}";
@@ -814,6 +833,7 @@ public partial class MainWindow : Window
                 if (showSummary) IPodTab.IsChecked = true;
             }
             var summary = playlistSummary is null ? result.Summary : $"{result.Summary}\n{playlistSummary}";
+            if (removedMissing > 0) summary += $"\nRemoved {removedMissing} track{(removedMissing == 1 ? "" : "s")} with missing files from the library.";
             DebugLog.Write("Music sync", summary);
             lastMusicSyncCompleted = true;
             if (showSummary) MessageBox.Show(this, summary, "Sync complete", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -826,7 +846,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            isSyncing = false; syncCancellation?.Dispose(); syncCancellation = null; StopSyncButton.Visibility = Visibility.Collapsed; TranscodeComboBox.IsEnabled = true; SyncAllButton.Content = "Sync all"; deviceTimer.Start(); RefreshDevice(); UpdateBusyWorkspaces();
+            isSyncing = false; syncCancellation?.Dispose(); syncCancellation = null; StopSyncButton.Visibility = Visibility.Collapsed; TranscodeComboBox.IsEnabled = true; SyncAllButton.Content = "Sync all"; StopSyncAnimation(); deviceTimer.Start(); RefreshDevice(); UpdateBusyWorkspaces();
         }
     }
 
@@ -1020,7 +1040,7 @@ public partial class MainWindow : Window
             SavePreferences(); SavePodcastLibrary(); SaveLibrary();
         }
         catch (Exception ex) { e.Cancel = true; DebugLog.Write("App", "Save before closing failed", ex); MessageBox.Show(this, ex.Message, "Could not save library"); base.OnClosing(e); return; }
-        deviceTimer.Stop(); playCountSyncTimer.Stop(); podcastPlaybackTimer.Stop(); playbackTimer.Stop(); ipodLoadCancellation?.Cancel(); player.Close();
+        deviceTimer.Stop(); playCountSyncTimer.Stop(); podcastPlaybackTimer.Stop(); playbackTimer.Stop(); syncParticleTimer.Stop(); ipodLoadCancellation?.Cancel(); player.Close();
         DebugLog.Write("App", "Library window closed");
         base.OnClosing(e);
     }

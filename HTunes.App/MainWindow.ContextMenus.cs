@@ -20,6 +20,16 @@ public partial class MainWindow
         UpdateTagControls();
         UpdateRenameControls();
         if (isTagSaving || isRenaming) SyncCurrentButton.IsEnabled = SyncAllButton.IsEnabled = EjectButton.IsEnabled = false;
+        UpdateTabProcessingIndicators();
+    }
+
+    // Pulse the nav tab for whichever section is currently working.
+    private void UpdateTabProcessingIndicators()
+    {
+        if (TagTab is null) return;
+        TabPulse.SetIsActive(TagTab, isTagSaving);
+        TabPulse.SetIsActive(PodcastsTab, activePodcastDownloads > 0);
+        TabPulse.SetIsActive(IPodTab, isSyncing || isReconcilingPlayCounts || autoSyncRunning);
     }
 
     private void InitializeContextMenus()
