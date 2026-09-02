@@ -19,8 +19,46 @@ public partial class MainWindow
         PodcastShows.Remove(show);
     }
 
+    private List<Guid> previousTrackSelection = [];
+    private bool suppressSelectionHistory;
+
+    // A lost multi-row selection (misclick that collapses or replaces it) goes onto the undo
+    // stack so Ctrl+Z brings the whole selection back.
+    private void RecordTrackSelectionChange()
+    {
+        if (suppressSelectionHistory || !IsLoaded) return;
+        var current = TracksGrid.SelectedItems.Cast<Track>().Select(track => track.Id).ToList();
+        if (previousTrackSelection.Count >= 2 && previousTrackSelection.Except(current).Any())
+        {
+            var before = previousTrackSelection.ToList();
+            var after = current.ToList();
+            RecordEdit("Restore selection", () => RestoreTrackSelection(before), () => RestoreTrackSelection(after));
+        }
+        previousTrackSelection = current;
+    }
+
+    private void RestoreTrackSelection(IReadOnlyCollection<Guid> ids)
+    {
+        suppressSelectionHistory = true;
+        try
+        {
+            var wanted = ids.ToHashSet();
+            TracksGrid.SelectedItems.Clear();
+            foreach (var track in VisibleTracks.Where(track => wanted.Contains(track.Id))) TracksGrid.SelectedItems.Add(track);
+            if (TracksGrid.SelectedItem is not null) TracksGrid.ScrollIntoView(TracksGrid.SelectedItem);
+            previousTrackSelection = TracksGrid.SelectedItems.Cast<Track>().Select(track => track.Id).ToList();
+        }
+        finally { suppressSelectionHistory = false; }
+    }
+
     private void ApplyHistory(bool redo)
     {
+        if ((redo ? editHistory.RedoDescription : editHistory.UndoDescription) == "Restore selection")
+        {
+            if (redo) editHistory.Redo(); else editHistory.Undo();
+            CommandManager.InvalidateRequerySuggested();
+            return;
+        }
         try
         {
             // Release any file currently held by playback before an undo that may rewrite its tags.
@@ -61,7 +99,7 @@ public partial class MainWindow
     {
         if (tracks.Count == 0) return;
         var before = tracks.ToDictionary(track => track, TrackMetadata.Read);
-        if (new MetadataEditorWindow(tracks) { Owner = this }.ShowDialog() != true) return;
+        if (new MetadataEditorWindow(tracks, allTracks) { Owner = this }.ShowDialog() != true) return;
         var changed = tracks.Where(track => !before[track].SameAs(TrackMetadata.Read(track))).ToList();
         foreach (var track in changed)
         {
@@ -91,6 +129,9 @@ public partial class MainWindow
     {
         var before = playlist.TrackIds.ToList();
         change();
+        // A playlist never keeps the same track twice; extra copies are dropped, keeping the first.
+        if (playlist.TrackIds.Distinct().Count() != playlist.TrackIds.Count)
+            playlist.TrackIds = playlist.TrackIds.Distinct().ToList();
         var after = playlist.TrackIds.ToList();
         if (!before.SequenceEqual(after))
             RecordEdit("Change playlist tracks", () => playlist.TrackIds = before.ToList(), () => playlist.TrackIds = after.ToList());

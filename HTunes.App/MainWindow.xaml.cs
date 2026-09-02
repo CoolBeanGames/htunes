@@ -1,5 +1,6 @@
 using Microsoft.Win32;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
@@ -27,6 +28,7 @@ public partial class MainWindow : Window
     private string category = "Artist";
     private List<Track> allTracks = [];
     private List<Track> ipodTracks = [];
+    private List<IPodPlaylistView> ipodPlaylists = [];
     private IPodDevice? currentDevice;
     private bool isIPodView;
     private bool isIPodLoading;
@@ -37,6 +39,7 @@ public partial class MainWindow : Window
     private readonly bool initializeServices;
     private CancellationTokenSource? ipodLoadCancellation;
     private readonly DispatcherTimer playCountSyncTimer = new() { Interval = TimeSpan.FromSeconds(4) };
+    private readonly DispatcherTimer playbackTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
 
     public ObservableCollection<Track> VisibleTracks { get; } = [];
     public ObservableCollection<Playlist> Playlists { get; } = [];
@@ -50,12 +53,14 @@ public partial class MainWindow : Window
         if (!initializeServices && isolatedLibraryFile is not null) dataFile = Path.GetFullPath(isolatedLibraryFile);
         InitializeComponent(); DataContext = this;
         if (initializeServices) { LoadPreferences(); LoadLibrary(); }
-        InitializePodcastUi(initializeServices); InitializeContextMenus(); InitializeTagEditor(); InitializeRenameEditor(); InitializeColumnSorting(); InitializeTopMenus(); InitializeNavigation(); RefreshBrowser();
+        InitializePodcastUi(initializeServices); InitializeContextMenus(); InitializeTagEditor(); InitializeRenameEditor(); InitializeColumnSorting(); InitializeDownloadOverrides(); InitializeTopMenus(); InitializeNavigation(); RefreshBrowser();
         if (!initializeServices) return;
         RefreshDevice();
         player.MediaEnded += (_, _) => { if (currentPodcastEpisode is not null) PodcastPlaybackEnded(); else if (repeatPlayback) { player.Position = TimeSpan.Zero; player.Play(); } else NextTrack(); };
         deviceTimer.Tick += (_, _) => RefreshDevice();
         playCountSyncTimer.Tick += async (_, _) => { playCountSyncTimer.Stop(); if (currentDevice is not null) await ReconcilePlayCountsAsync(currentDevice); };
+        playbackTimer.Tick += (_, _) => UpdatePlaybackDisplay();
+        player.MediaOpened += (_, _) => UpdatePlaybackDisplay();
         deviceTimer.Start();
         _ = RefreshPodcastsInBackgroundAsync();
     }
@@ -69,7 +74,11 @@ public partial class MainWindow : Window
             if (data is null) return;
             allTracks = data.Tracks;
             foreach (var track in allTracks.Where(t => !t.MetadataManagedByLibrary)) MediaMetadata.ReadInto(track, onlyMissing: true);
-            foreach (var playlist in data.Playlists) Playlists.Add(playlist);
+            foreach (var playlist in data.Playlists)
+            {
+                if (playlist.TrackIds.Distinct().Count() != playlist.TrackIds.Count) playlist.TrackIds = playlist.TrackIds.Distinct().ToList();
+                Playlists.Add(playlist);
+            }
             DebugLog.Write("Library", $"Loaded tracks={allTracks.Count}; playlists={Playlists.Count}");
         }
         catch (Exception ex) { DebugLog.Write("Library", "Could not load saved library", ex); }
@@ -117,6 +126,37 @@ public partial class MainWindow : Window
         }
         TracksGrid.Columns.First(column => Equals(column.Header, "Bitrate")).SortMemberPath = nameof(Track.BitrateKbps);
         PodcastEpisodesGrid.Columns.First(column => Equals(column.Header, "Published")).SortMemberPath = nameof(PodcastEpisode.PublishedUtc);
+        TracksGrid.Sorting += TrackGrid_Sorting;
+        TagTracksGrid.Sorting += TrackGrid_Sorting;
+    }
+
+    // Sorting by a grouping column cascades into a sensible sub-order: album within artist,
+    // then disc / track number, then title for tracks that carry no number.
+    private static readonly string[] ArtistSortChain = [nameof(Track.Artist), nameof(Track.Album), nameof(Track.DiscNumber), nameof(Track.TrackNumber), nameof(Track.Title)];
+    private static readonly string[] AlbumSortChain = [nameof(Track.Album), nameof(Track.DiscNumber), nameof(Track.TrackNumber), nameof(Track.Title)];
+    private static readonly string[] GenreSortChain = [nameof(Track.Genre), nameof(Track.Artist), nameof(Track.Album), nameof(Track.DiscNumber), nameof(Track.TrackNumber), nameof(Track.Title)];
+
+    private void TrackGrid_Sorting(object sender, DataGridSortingEventArgs e)
+    {
+        var chain = e.Column.SortMemberPath switch
+        {
+            nameof(Track.Artist) => ArtistSortChain,
+            nameof(Track.Album) => AlbumSortChain,
+            nameof(Track.Genre) => GenreSortChain,
+            _ => null
+        };
+        if (chain is null || sender is not DataGrid grid) return;
+        e.Handled = true;
+        var direction = e.Column.SortDirection == ListSortDirection.Ascending ? ListSortDirection.Descending : ListSortDirection.Ascending;
+        foreach (var column in grid.Columns) column.SortDirection = null;
+        e.Column.SortDirection = direction;
+        var view = grid.Items;
+        using (view.DeferRefresh())
+        {
+            view.SortDescriptions.Clear();
+            for (var index = 0; index < chain.Length; index++)
+                view.SortDescriptions.Add(new SortDescription(chain[index], index == 0 ? direction : ListSortDirection.Ascending));
+        }
     }
 
     private void TranscodeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -143,9 +183,19 @@ public partial class MainWindow : Window
                 ? $"{source.Count} podcast episode{(source.Count == 1 ? "" : "s")} on {currentDevice?.Name ?? "iPod"}"
                 : $"{viewTracks.Count(track => !track.IsPodcast)} song{(viewTracks.Count(track => !track.IsPodcast) == 1 ? "" : "s")} on {currentDevice?.Name ?? "iPod"}"
             : $"{viewTracks.Count} song{(viewTracks.Count == 1 ? "" : "s")} in your library";
-        PlaylistsHeading.Visibility = PlaylistList.Visibility = NewPlaylistButton.Visibility = isIPodView ? Visibility.Collapsed : Visibility.Visible;
-        PlaylistsHeadingRow.Height = NewPlaylistRow.Height = isIPodView ? new GridLength(0) : GridLength.Auto;
-        PlaylistsListRow.Height = isIPodView ? new GridLength(0) : new GridLength(150);
+        PlaylistsHeading.Visibility = PlaylistList.Visibility = isIPodView ? Visibility.Collapsed : Visibility.Visible;
+        NewPlaylistButton.Visibility = isIPodView ? Visibility.Collapsed : Visibility.Visible;
+        IPodPlaylistsHeading.Visibility = IPodPlaylistList.Visibility = isIPodView ? Visibility.Visible : Visibility.Collapsed;
+        PlaylistsHeadingRow.Height = isIPodView ? GridLength.Auto : GridLength.Auto;
+        NewPlaylistRow.Height = isIPodView ? new GridLength(0) : GridLength.Auto;
+        PlaylistsListRow.Height = new GridLength(150);
+        if (isIPodView && !ReferenceEquals(IPodPlaylistList.ItemsSource, ipodPlaylists))
+        {
+            var selectedName = (IPodPlaylistList.SelectedItem as IPodPlaylistView)?.Name;
+            IPodPlaylistList.ItemsSource = ipodPlaylists;
+            IPodPlaylistList.SelectedItem = ipodPlaylists.FirstOrDefault(p => p.Name == selectedName);
+        }
+        else if (isIPodView) IPodPlaylistList.Items.Refresh();
         EmptyStateTitle.Text = isIPodView ? (isIPodLoading ? "Reading iPod content…" : category == "Podcast" ? "No podcasts found on this iPod" : "No music found on this iPod") : "Drop music here to add it";
         EmptyStateDetail.Text = isIPodView ? "Content stored by the stock iPod OS appears here" : "or choose File → Add files to library";
         PrimaryPanel.Visibility = musicBrowse.ShowsGroups ? Visibility.Visible : Visibility.Collapsed;
@@ -183,6 +233,22 @@ public partial class MainWindow : Window
         if (!musicBrowse.ShowsTracks) ShowArtwork(scoped);
         if (!isIPodView && PlaylistList.SelectedItem is Playlist)
             PlaylistList_SelectionChanged(this, new SelectionChangedEventArgs(Selector.SelectionChangedEvent, Array.Empty<object>(), Array.Empty<object>()));
+        if (isIPodView && IPodPlaylistList.SelectedItem is IPodPlaylistView plView)
+            ShowIPodPlaylistTracks(plView);
+    }
+
+    private void IPodPlaylistList_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshBrowser();
+
+    private void ShowIPodPlaylistTracks(IPodPlaylistView view)
+    {
+        var keys = view.TrackKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var tracks = ipodTracks.Where(track => keys.Contains(TrackIdentity.Key(track.Title, track.Artist, track.Album, track.TrackNumber))).ToList();
+        PageTitle.Text = view.Name;
+        LibrarySummary.Text = $"{tracks.Count} of {view.TrackCount} song{(view.TrackCount == 1 ? "" : "s")} on this iPod playlist{(view.IsSmart ? "  •  smart playlist" : "")}";
+        PrimaryPanel.Visibility = SecondaryPanel.Visibility = BrowseEmptyState.Visibility = Visibility.Collapsed;
+        TracksPanel.Visibility = MusicBackButton.Visibility = Visibility.Visible;
+        MusicBackButton.Content = "← Back to iPod music";
+        SetVisibleTracks(tracks, preserveOrder: true);
     }
 
     private List<Track> SourceTracks => isIPodView ? ipodTracks : allTracks;
@@ -194,8 +260,11 @@ public partial class MainWindow : Window
     private void SetVisibleTracks(IEnumerable<Track> tracks, bool preserveOrder = false)
     {
         var ordered = preserveOrder ? tracks.ToList() : tracks.OrderBy(t => t.DiscNumber).ThenBy(t => t.TrackNumber).ThenBy(t => t.Title).ToList();
+        suppressSelectionHistory = true;
         VisibleTracks.Clear();
         foreach (var track in ordered) VisibleTracks.Add(track);
+        suppressSelectionHistory = false;
+        previousTrackSelection = TracksGrid.SelectedItems.Cast<Track>().Select(t => t.Id).ToList();
         EmptyState.Visibility = VisibleTracks.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         ShowArtwork(ordered);
     }
@@ -264,6 +333,7 @@ public partial class MainWindow : Window
 
     private void TracksGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        RecordTrackSelectionChange();
         var selected = SelectedTracks();
         if (selected.Count > 0) ShowArtwork(selected);
     }
@@ -376,7 +446,9 @@ public partial class MainWindow : Window
 
     private void NewPlaylist_Click(object sender, RoutedEventArgs e)
     {
-        CreateLocalPlaylist($"New Playlist {Playlists.Count + 1}");
+        var name = AskPlaylistName("New playlist", $"New Playlist {Playlists.Count + 1}");
+        if (name is null) return;
+        CreateLocalPlaylist(name);
     }
 
     private void PlaylistList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -460,7 +532,24 @@ public partial class MainWindow : Window
         PlaylistList_SelectionChanged(this, new SelectionChangedEventArgs(Selector.SelectionChangedEvent, new List<object>(), new List<object>()));
     }
 
-    private void TracksGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e) => PlaySelected();
+    private void TracksGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (DoubleClickOnRow(TracksGrid, e)) PlaySelected();
+    }
+
+    private async void PodcastEpisodesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (!DoubleClickOnRow(PodcastEpisodesGrid, e) || SelectedPodcastShow is not { } show || PodcastEpisodesGrid.SelectedItem is not PodcastEpisode episode) return;
+        await PlayPodcastEpisodeAsync(show, episode);
+    }
+
+    private static bool DoubleClickOnRow(ItemsControl grid, RoutedEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source || ItemsControl.ContainerFromElement(grid, source) is null) return false;
+        for (var node = source; node is Visual or System.Windows.Media.Media3D.Visual3D; node = VisualTreeHelper.GetParent(node))
+            if (node is System.Windows.Controls.Primitives.ButtonBase) return false;
+        return true;
+    }
 
     private void RefreshDevice()
     {
@@ -558,6 +647,7 @@ public partial class MainWindow : Window
         try
         {
             var tracks = await Task.Run(() => ReadIPodMusicTracks(device.RootPath, token), token);
+            var playlists = await Task.Run(() => { try { return IPodPlaylistReader.Read(device.RootPath); } catch { return new List<IPodPlaylistView>(); } }, token);
             if (currentDevice is not null && Same(currentDevice.RootPath, device.RootPath))
             {
                 foreach (var ipodTrack in tracks)
@@ -570,6 +660,7 @@ public partial class MainWindow : Window
                     }
                 }
                 ipodTracks = tracks;
+                ipodPlaylists = playlists;
             }
         }
         catch (OperationCanceledException) { }
@@ -700,11 +791,20 @@ public partial class MainWindow : Window
                 ? new SyncResult(0, 0, 0, 0, 0, 0)
                 : await Task.Run(() => IPodSyncService.Sync(device.RootPath, requested, allTracks, randomFill, preset, progress, syncToken), syncToken);
             SaveLibrary(); // Persist per-device sync fingerprints/markers before any following playlist operation.
-            IPodPlaylistSyncResult? playlistResult = null;
+            string? playlistSummary = null;
             if (playlist is not null)
             {
                 DeviceDetailsText.Text = $"  •  Updating playlist {playlist.Name}";
-                playlistResult = await Task.Run(() => IPodPlaylistSyncService.Sync(device.RootPath, playlist, allTracks));
+                playlistSummary = (await Task.Run(() => IPodPlaylistSyncService.Sync(device.RootPath, playlist, allTracks))).Summary;
+            }
+            else if (randomFill && Playlists.Count > 0)
+            {
+                DeviceDetailsText.Text = "  •  Updating playlists";
+                var snapshot = Playlists.ToList();
+                var results = await Task.Run(() => IPodPlaylistSyncService.SyncAll(device.RootPath, snapshot, allTracks));
+                playlistSummary = $"{results.Count} playlist{(results.Count == 1 ? "" : "s")} synced.";
+                foreach (var pl in snapshot) pl.PreviousNames.Clear();
+                SaveLibrary();
             }
             currentDevice = IPodDetector.FindConnected();
             if (currentDevice is not null)
@@ -713,7 +813,7 @@ public partial class MainWindow : Window
                 await LoadIPodTracksAsync(currentDevice);
                 if (showSummary) IPodTab.IsChecked = true;
             }
-            var summary = playlistResult is null ? result.Summary : $"{result.Summary}\n{playlistResult.Summary}";
+            var summary = playlistSummary is null ? result.Summary : $"{result.Summary}\n{playlistSummary}";
             DebugLog.Write("Music sync", summary);
             lastMusicSyncCompleted = true;
             if (showSummary) MessageBox.Show(this, summary, "Sync complete", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -785,7 +885,7 @@ public partial class MainWindow : Window
         }
         countedTrack.PlayCount++;
         track.PlayCount = countedTrack.PlayCount;
-        NowPlayingTitle.Text = track.Title; NowPlayingArtist.Text = $"{track.Artist} — {track.Album}"; SaveLibrary(); TracksGrid.Items.Refresh();
+        SetNowPlaying(track.Title, $"{track.Artist} — {track.Album}", track.ArtworkPath); SaveLibrary(); TracksGrid.Items.Refresh();
         if (currentDevice is not null && allTracks.Contains(countedTrack)) { playCountSyncTimer.Stop(); playCountSyncTimer.Start(); }
     }
     private Track? FindLocalTrackForIPod(Track track)
@@ -796,10 +896,80 @@ public partial class MainWindow : Window
             (item.PreviousMetadataIdentities ?? []).Contains(key, StringComparer.OrdinalIgnoreCase));
     }
     private void Pause_Click(object sender, RoutedEventArgs e) { player.Pause(); CapturePodcastPlaybackProgress(); SavePodcastLibrary(); }
-    private void Stop_Click(object sender, RoutedEventArgs e) { if (currentPodcastEpisode is not null) FinalizePodcastPlayback(); else player.Stop(); }
+    private void Stop_Click(object sender, RoutedEventArgs e) { if (currentPodcastEpisode is not null) FinalizePodcastPlayback(); else { player.Stop(); ResetNowPlaying(); } }
     private void Previous_Click(object sender, RoutedEventArgs e) => MoveSelection(-1);
     private void Next_Click(object sender, RoutedEventArgs e) => NextTrack();
     private void NextTrack() => MoveSelection(1);
+
+    private void ShuffleButton_Click(object sender, RoutedEventArgs e) => shufflePlayback = ShuffleButton.IsChecked == true;
+    private void RepeatButton_Click(object sender, RoutedEventArgs e) => repeatPlayback = RepeatButton.IsChecked == true;
+
+    private void SetNowPlaying(string title, string subtitle, string? artwork)
+    {
+        NowPlayingTitle.Text = string.IsNullOrWhiteSpace(title) ? "Nothing playing" : title;
+        NowPlayingArtist.Text = subtitle;
+        NowPlayingArt.Source = null;
+        NowPlayingArtPlaceholder.Visibility = Visibility.Visible;
+        if (!string.IsNullOrWhiteSpace(artwork) && (artwork.StartsWith("http", StringComparison.OrdinalIgnoreCase) || File.Exists(artwork)))
+        {
+            try
+            {
+                var image = new BitmapImage();
+                image.BeginInit();
+                image.CacheOption = BitmapCacheOption.OnLoad;
+                image.UriSource = new Uri(artwork, UriKind.Absolute);
+                image.EndInit();
+                NowPlayingArt.Source = image;
+                NowPlayingArtPlaceholder.Visibility = Visibility.Collapsed;
+            }
+            catch { NowPlayingArt.Source = null; NowPlayingArtPlaceholder.Visibility = Visibility.Visible; }
+        }
+        playbackTimer.Start();
+        UpdatePlaybackDisplay();
+    }
+
+    private void ResetNowPlaying()
+    {
+        SetNowPlaying("", "", null);
+        playbackTimer.Stop();
+        PlaybackPositionText.Text = PlaybackDurationText.Text = "0:00";
+        PlaybackProgressBar.Value = 0;
+        QueuePositionText.Text = QueueLabelText.Text = "";
+    }
+
+    private void UpdatePlaybackDisplay()
+    {
+        if (PlaybackProgressBar is null) return;
+        var hasMedia = player.Source is not null;
+        var duration = player.NaturalDuration.HasTimeSpan ? player.NaturalDuration.TimeSpan : TimeSpan.Zero;
+        var position = hasMedia ? player.Position : TimeSpan.Zero;
+        PlaybackPositionText.Text = FormatPlaybackTime(position);
+        PlaybackDurationText.Text = duration > TimeSpan.Zero ? FormatPlaybackTime(duration) : "0:00";
+        PlaybackProgressBar.Value = duration > TimeSpan.Zero ? Math.Clamp(position.TotalSeconds / duration.TotalSeconds * 100, 0, 100) : 0;
+        if (currentPodcastEpisode is not null)
+        {
+            QueuePositionText.Text = "Podcast";
+            QueueLabelText.Text = "episode";
+        }
+        else if (hasMedia && VisibleTracks.Count > 0 && TracksGrid.SelectedIndex >= 0)
+        {
+            QueuePositionText.Text = $"{TracksGrid.SelectedIndex + 1} of {VisibleTracks.Count}";
+            QueueLabelText.Text = "in queue";
+        }
+        else
+        {
+            QueuePositionText.Text = QueueLabelText.Text = "";
+        }
+    }
+
+    private static string FormatPlaybackTime(TimeSpan value)
+    {
+        if (value < TimeSpan.Zero) value = TimeSpan.Zero;
+        return value.TotalHours >= 1 ? value.ToString(@"h\:mm\:ss") : value.ToString(@"m\:ss");
+    }
+
+    private void SyncShufflePlayback(bool value) { shufflePlayback = value; if (ShuffleButton is not null) ShuffleButton.IsChecked = value; }
+    private void SyncRepeatPlayback(bool value) { repeatPlayback = value; if (RepeatButton is not null) RepeatButton.IsChecked = value; }
     private void MoveSelection(int offset)
     {
         if (isRenameView)
@@ -815,9 +985,13 @@ public partial class MainWindow : Window
             TagTracksGrid.ScrollIntoView(TagTracksGrid.SelectedItem); PlaySelected(); return;
         }
         if (VisibleTracks.Count == 0) return;
-        TracksGrid.SelectedIndex = shufflePlayback && offset > 0 && VisibleTracks.Count > 1
-            ? Random.Shared.GetItems(Enumerable.Range(0, VisibleTracks.Count).Where(index => index != TracksGrid.SelectedIndex).ToArray(), 1)[0]
-            : (Math.Max(0, TracksGrid.SelectedIndex) + offset + VisibleTracks.Count) % VisibleTracks.Count;
+        if (shufflePlayback && offset > 0 && VisibleTracks.Count > 1)
+        {
+            var candidates = Enumerable.Range(0, VisibleTracks.Count).Where(index => index != TracksGrid.SelectedIndex && !VisibleTracks[index].ExcludeFromShuffle).ToArray();
+            if (candidates.Length == 0) candidates = Enumerable.Range(0, VisibleTracks.Count).Where(index => index != TracksGrid.SelectedIndex).ToArray();
+            TracksGrid.SelectedIndex = Random.Shared.GetItems(candidates, 1)[0];
+        }
+        else TracksGrid.SelectedIndex = (Math.Max(0, TracksGrid.SelectedIndex) + offset + VisibleTracks.Count) % VisibleTracks.Count;
         TracksGrid.ScrollIntoView(TracksGrid.SelectedItem); PlaySelected();
     }
     private void About_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this, "hTunes\nA modern Windows music library and iPod companion.", "About hTunes");
@@ -846,7 +1020,7 @@ public partial class MainWindow : Window
             SavePreferences(); SavePodcastLibrary(); SaveLibrary();
         }
         catch (Exception ex) { e.Cancel = true; DebugLog.Write("App", "Save before closing failed", ex); MessageBox.Show(this, ex.Message, "Could not save library"); base.OnClosing(e); return; }
-        deviceTimer.Stop(); playCountSyncTimer.Stop(); podcastPlaybackTimer.Stop(); ipodLoadCancellation?.Cancel(); player.Close();
+        deviceTimer.Stop(); playCountSyncTimer.Stop(); podcastPlaybackTimer.Stop(); playbackTimer.Stop(); ipodLoadCancellation?.Cancel(); player.Close();
         DebugLog.Write("App", "Library window closed");
         base.OnClosing(e);
     }
@@ -864,13 +1038,18 @@ public sealed class Track
     public bool MetadataManagedByLibrary { get; set; }
     public bool IsNew { get; set; }
     public bool AutoTagged { get; set; }
+    public bool ExcludeFromShuffle { get; set; }
     [JsonIgnore] public string BitrateDisplay => BitrateKbps > 0 ? $"{BitrateKbps} kbps" : "—";
-    [JsonIgnore] public bool HasMissingMetadata => Missing(Title) || Missing(Artist) || Missing(Album) || Missing(Genre) || TrackNumber <= 0 || Year <= 0;
-    private static bool Missing(string value) => string.IsNullOrWhiteSpace(value) || value.StartsWith("Unknown", StringComparison.OrdinalIgnoreCase);
+    [JsonIgnore] public bool HasMissingMetadata => Missing(Title) || Missing(Artist) || Missing(Album) || Missing(Genre);
+    private static bool Missing(string value) =>
+        string.IsNullOrWhiteSpace(value) ||
+        value.StartsWith("Unknown", StringComparison.OrdinalIgnoreCase) ||
+        value.Trim().Equals("missing", StringComparison.OrdinalIgnoreCase) ||
+        value.Trim().Equals("music", StringComparison.OrdinalIgnoreCase);
     public string? ArtworkPath { get; set; } public DateTime DateAdded { get; set; }
     public Dictionary<string, int> SyncedPlayCounts { get; set; } = [];
     public Dictionary<string, string> SyncedIPodFingerprints { get; set; } = [];
     public List<string> PreviousMetadataIdentities { get; set; } = [];
 }
-public sealed class Playlist { public Guid Id { get; set; } = Guid.NewGuid(); public string Name { get; set; } = "New Playlist"; public List<Guid> TrackIds { get; set; } = []; }
+public sealed class Playlist { public Guid Id { get; set; } = Guid.NewGuid(); public string Name { get; set; } = "New Playlist"; public List<Guid> TrackIds { get; set; } = []; public List<string> PreviousNames { get; set; } = []; }
 public sealed class LibraryData { public List<Track> Tracks { get; set; } = []; public List<Playlist> Playlists { get; set; } = []; }

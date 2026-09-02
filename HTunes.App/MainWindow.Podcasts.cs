@@ -314,7 +314,7 @@ public partial class MainWindow
         currentPodcastPlaybackShow = show;
         player.Open(new Uri(episode.LocalPath!)); player.Play();
         podcastPlaybackTimer.Start();
-        NowPlayingTitle.Text = episode.Title; NowPlayingArtist.Text = show.Title;
+        SetNowPlaying(episode.Title, show.Title, episode.ArtworkDisplay);
     }
 
     private void PodcastMediaOpened()
@@ -361,6 +361,7 @@ public partial class MainWindow
         PodcastService.MarkPlayed(currentPodcastEpisode);
         currentPodcastEpisode = null;
         currentPodcastPlaybackShow = null;
+        ResetNowPlaying();
         SavePodcastLibrary(); RefreshPodcastShowPanel(); ScheduleConnectedPodcastCleanup();
     }
 
@@ -374,6 +375,7 @@ public partial class MainWindow
         if (episode.IsPlayed) PodcastService.MarkPlayed(episode);
         currentPodcastEpisode = null;
         currentPodcastPlaybackShow = null;
+        ResetNowPlaying();
         SavePodcastLibrary();
         if (isPodcastView) RefreshPodcastShowPanel();
         if (episode.IsPlayed) ScheduleConnectedPodcastCleanup();

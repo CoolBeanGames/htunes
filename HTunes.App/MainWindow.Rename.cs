@@ -32,7 +32,9 @@ public partial class MainWindow
 
     private void InitializeRenameEditor()
     {
-        foreach (var (key, label, initial) in new[] { ("Replace", "1. Replace text", ""), ("Remove", "2. Remove text", ""), ("Front", "3. Trim front characters", "0"), ("End", "4. Trim end characters", "0"), ("Prepend", "5. Prepend text", ""), ("Append", "6. Append text", "") })
+        foreach (var (key, label, initial) in new[] { ("Replace", "1. Replace text", ""), ("Remove", "2. Remove text", ""),
+            ("CutBefore", "3. Cut before text (delete it and everything before it)", ""), ("CutAfter", "4. Cut after text (delete it and everything after it)", ""),
+            ("Front", "5. Trim front characters", "0"), ("End", "6. Trim end characters", "0"), ("Prepend", "7. Prepend text", ""), ("Append", "8. Append text", "") })
         {
             var check = new CheckBox { Content = label, Margin = new Thickness(0, 0, 0, 4) };
             var box = new TextBox { Text = initial, Padding = new Thickness(6, 3, 6, 3), ToolTip = label };
@@ -76,6 +78,7 @@ public partial class MainWindow
             return count;
         }
         return new(mode, Enabled("Replace"), Value("Replace"), renameFields["Replace"].Second!.Text, Enabled("Remove"), Value("Remove"),
+            Enabled("CutBefore"), Value("CutBefore"), Enabled("CutAfter"), Value("CutAfter"),
             Enabled("Front"), Count("Front"), Enabled("End"), Count("End"), Enabled("Prepend"), Value("Prepend"), Enabled("Append"), Value("Append"), RenameIgnoreCase.IsChecked == true);
     }
 

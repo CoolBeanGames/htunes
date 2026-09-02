@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http;
 using System.IO;
 using System.Text.Json;
@@ -6,11 +7,15 @@ namespace HTunes.App;
 
 internal sealed record AutoTagMatch(IReadOnlyDictionary<string, string> Fields, string Description);
 
+internal sealed class MusicBrainzRateLimitException(string message) : Exception(message);
+
 internal static class MusicBrainzTagService
 {
     private static readonly HttpClient Client = CreateClient();
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static DateTime lastRequestUtc;
+    // MusicBrainz allows ~1 request/second/IP for anonymous clients; stay a little under that.
+    private static readonly TimeSpan MinimumSpacing = TimeSpan.FromMilliseconds(1200);
 
     public static async Task<AutoTagMatch?> FindAsync(Track track, bool force, CancellationToken token)
     {
@@ -96,13 +101,28 @@ internal static class MusicBrainzTagService
         await Gate.WaitAsync(token);
         try
         {
-            var wait = TimeSpan.FromMilliseconds(1100) - (DateTime.UtcNow - lastRequestUtc);
-            if (wait > TimeSpan.Zero) await Task.Delay(wait, token);
-            using var response = await Client.GetAsync(relative, token);
-            lastRequestUtc = DateTime.UtcNow;
-            response.EnsureSuccessStatusCode();
-            await using var stream = await response.Content.ReadAsStreamAsync(token);
-            return await JsonDocument.ParseAsync(stream, cancellationToken: token);
+            for (var attempt = 0; ; attempt++)
+            {
+                var wait = MinimumSpacing - (DateTime.UtcNow - lastRequestUtc);
+                if (wait > TimeSpan.Zero) await Task.Delay(wait, token);
+                lastRequestUtc = DateTime.UtcNow; // measure spacing request-start to request-start
+                using var response = await Client.GetAsync(relative, token);
+                lastRequestUtc = DateTime.UtcNow;
+                if (response.StatusCode is HttpStatusCode.ServiceUnavailable or HttpStatusCode.TooManyRequests)
+                {
+                    var retryAfter = response.Headers.RetryAfter?.Delta
+                        ?? (response.Headers.RetryAfter?.Date is { } date ? date - DateTimeOffset.UtcNow : (TimeSpan?)null)
+                        ?? TimeSpan.FromSeconds(2);
+                    if (attempt >= 2)
+                        throw new MusicBrainzRateLimitException(
+                            $"MusicBrainz is rate-limiting this IP (HTTP {(int)response.StatusCode}). It allows about one request per second — retried {attempt + 1}× and gave up. Wait a minute, or tag a smaller selection.");
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(retryAfter.TotalSeconds, 1, 10)), token);
+                    continue;
+                }
+                response.EnsureSuccessStatusCode();
+                await using var stream = await response.Content.ReadAsStreamAsync(token);
+                return await JsonDocument.ParseAsync(stream, cancellationToken: token);
+            }
         }
         finally { Gate.Release(); }
     }

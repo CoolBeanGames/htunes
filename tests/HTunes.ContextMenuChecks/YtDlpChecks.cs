@@ -78,7 +78,7 @@ internal static partial class Program
             Directory.CreateDirectory(settings.DownloadDirectory);
             var source = Path.Combine(settings.DownloadDirectory, "tone.wav"); File.WriteAllBytes(source, SyntheticWav());
             var import = typeof(MainWindow).GetMethod("ImportYtAudioAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
-            void Import(MainWindow target, string path, string id) => RunUiTask(() => (Task)import.Invoke(target, [new YtCompletedFile(path, "generic " + id, "Test tone"), settings])!);
+            void Import(MainWindow target, string path, string id) => RunUiTask(() => (Task)import.Invoke(target, [new YtCompletedFile(path, "generic " + id, "Test tone"), settings, null])!);
             try
             {
                 Import(window, source, "tone");

@@ -28,6 +28,15 @@ public partial class MainWindow
             var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 6) }; panel.Children.Add(check); panel.Children.Add(box);
             tagFields[field] = (check, box);
             box.TextChanged += (_, _) => { if (!refreshingTagInspector) check.IsChecked = true; UpdateTagControls(); };
+            if (field is "Artist" or "AlbumArtist" or "Album" or "Genre")
+            {
+                var property = typeof(Track).GetProperty(field)!;
+                TextBoxAutoComplete.Attach(box, () => allTracks
+                    .Select(track => property.GetValue(track)?.ToString() ?? "")
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Distinct(StringComparer.CurrentCultureIgnoreCase)
+                    .OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase));
+            }
             check.Checked += TagOptionChanged; check.Unchecked += TagOptionChanged;
             if (field is "TrackNumber" or "DiscNumber" or "Year") { panel.Margin = new Thickness(0, 0, 5, 0); numeric.Children.Add(panel); }
             else TagFieldsPanel.Children.Add(panel);
@@ -102,7 +111,7 @@ public partial class MainWindow
         try
         {
             tagArtworkChanged = false; tagPendingArtwork = null;
-            TagResizeArtwork.IsChecked = false;
+            TagResizeArtwork.IsChecked = false; TagCropArtwork.IsChecked = false;
             foreach (var (field, controls) in tagFields)
             {
                 var values = selection.Select(t => typeof(Track).GetProperty(field)!.GetValue(t)?.ToString() ?? "").Distinct().ToList();
@@ -147,7 +156,7 @@ public partial class MainWindow
     private void TagRemoveArtwork_Click(object sender, RoutedEventArgs e)
     {
         if (!ContextActionsAvailable || TagSelection.Count == 0) return;
-        tagArtworkChanged = true; tagPendingArtwork = null; TagResizeArtwork.IsChecked = false;
+        tagArtworkChanged = true; tagPendingArtwork = null; TagResizeArtwork.IsChecked = false; TagCropArtwork.IsChecked = false;
         ShowTagArtwork(null); TagStatus.Text = "Artwork removal ready. Apply to remove it from the selected tracks."; UpdateTagControls();
     }
     private void TagOptionChanged(object sender, RoutedEventArgs e) { if (!refreshingTagInspector) UpdateTagControls(); }
@@ -174,7 +183,7 @@ public partial class MainWindow
             var resize = TagResizeArtwork.IsChecked == true;
             if (resize && (!int.TryParse(TagArtworkWidth.Text, out _) || !int.TryParse(TagArtworkHeight.Text, out _))) throw new ArgumentException("Enter whole-number artwork dimensions.");
             patch = new TagPatch(tagFields.Where(f => f.Value.Check.IsChecked == true).ToDictionary(f => f.Key, f => f.Value.Box.Text), tagArtworkChanged, tagPendingArtwork,
-                resize, resize ? int.Parse(TagArtworkWidth.Text) : 600, resize ? int.Parse(TagArtworkHeight.Text) : 600);
+                resize, resize ? int.Parse(TagArtworkWidth.Text) : 600, resize ? int.Parse(TagArtworkHeight.Text) : 600, CropArtwork: TagCropArtwork.IsChecked == true);
             patch.Validate();
         }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "Check tag values"); return; }
@@ -207,7 +216,8 @@ public partial class MainWindow
         var writeFiles = TagWriteFiles.IsChecked == true;
         var edits = new List<TagBatchEdit>();
         var artistGenres = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var matched = 0; var skipped = 0; var failed = 0;
+        var matched = 0; var skipped = 0; var failed = 0; var rateLimited = 0;
+        string? lastError = null;
         isTagSaving = true; UpdateBusyWorkspaces();
         try
         {
@@ -228,12 +238,28 @@ public partial class MainWindow
                     var edit = await Task.Run(() => TagBatchEdit.Apply([track], patch, writeFiles, Path.Combine(SettingsStore.DataDirectory, "artwork"), () => Dispatcher.Invoke(SaveLibrary)));
                     edits.Add(edit); matched++;
                 }
-                catch (Exception ex) { failed++; DebugLog.Write("Auto tag", $"Failed track={track.Id}", ex); }
+                catch (MusicBrainzRateLimitException ex)
+                {
+                    rateLimited++; failed++; lastError = ex.Message;
+                    DebugLog.Write("Auto tag", $"Rate limited on track={track.Id}", ex);
+                    TagStatus.Text = $"Paused on “{track.Title}” — {ex.Message}";
+                    await Task.Delay(TimeSpan.FromSeconds(3));
+                }
+                catch (Exception ex)
+                {
+                    failed++; lastError = ex.GetBaseException().Message;
+                    DebugLog.Write("Auto tag", $"Failed track={track.Id}", ex);
+                }
             }
             if (edits.Count > 0)
                 RecordEdit("Auto-tag selected tracks", () => edits.AsEnumerable().Reverse().ToList().ForEach(edit => edit.Undo()), () => edits.ForEach(edit => edit.Redo()));
             RefreshBrowser(); RefreshTagLibrary();
-            TagStatus.Text = $"Auto-tag complete: {matched} matched, {skipped} skipped/no confident match, {failed} failed. MusicBrainz requests are rate-limited.";
+            var report = $"Auto-tag complete: {matched} matched, {skipped} no confident match, {failed} failed";
+            if (rateLimited > 0) report += $" ({rateLimited} of them MusicBrainz rate-limits — it allows ~1 request/second per IP; tag fewer tracks at a time or wait a minute)";
+            else if (failed > 0 && lastError is not null) report += $". Last error: {lastError}";
+            else report += ". MusicBrainz allows ~1 request/second, so large selections take a while.";
+            TagStatus.Text = report;
+            DebugLog.Write("Auto tag", report);
         }
         finally { isTagSaving = false; if (initializeServices) RefreshDevice(); UpdateBusyWorkspaces(); }
     }

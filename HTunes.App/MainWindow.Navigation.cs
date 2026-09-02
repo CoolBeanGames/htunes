@@ -25,7 +25,7 @@ public partial class MainWindow
         PodcastShowsList.PreviewMouseLeftButtonDown += CategoryList_PreviewMouseLeftButtonDown;
         InputBindings.Add(new KeyBinding(NavigationCommands.BrowseBack, new KeyGesture(Key.Left, ModifierKeys.Alt)));
         CommandBindings.Add(new CommandBinding(NavigationCommands.BrowseBack, (_, _) => GoBack(),
-            (_, e) => e.CanExecute = !isRenameView && !isTagView && !isDownloadView && ContextActionsAvailable && (isPodcastView ? podcastShowOpen : musicBrowse.CanGoBack || PlaylistList.SelectedItem is Playlist)));
+            (_, e) => e.CanExecute = !isRenameView && !isTagView && !isDownloadView && ContextActionsAvailable && (isPodcastView ? podcastShowOpen : musicBrowse.CanGoBack || PlaylistList.SelectedItem is Playlist || (isIPodView && IPodPlaylistList.SelectedItem is not null))));
     }
 
     private void BrowseList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -86,6 +86,7 @@ public partial class MainWindow
             }
             podcastShowOpen = false; RefreshPodcastShowPanel(); lastActionSource = PodcastShowsList; PodcastShowsList.Focus(); return;
         }
+        if (isIPodView && IPodPlaylistList.SelectedItem is not null) { IPodPlaylistList.SelectedItem = null; RefreshBrowser(); FocusCurrentMusicPage(); return; }
         if (PlaylistList.SelectedItem is Playlist) ResetMusicNavigation();
         else
         {

@@ -28,6 +28,7 @@ public partial class MainWindow
         AttachItemMenu(PrimaryList, menu => BuildTrackMenu(menu, ContextCategoryTracks(false)));
         AttachItemMenu(SecondaryList, menu => BuildTrackMenu(menu, ContextCategoryTracks(true)));
         AttachItemMenu(PlaylistList, BuildPlaylistMenu);
+        AttachItemMenu(IPodPlaylistList, BuildIPodPlaylistMenu);
         AttachItemMenu(PodcastShowsList, BuildPodcastShowMenu);
         AttachItemMenu(PodcastEpisodesGrid, BuildEpisodeMenu);
         AttachItemMenu(PodcastSearchResultsList, menu =>
@@ -144,6 +145,18 @@ public partial class MainWindow
         {
             AddMenuAction(menu, "Sync selected to iPod", () => SyncTracksAsync(tracks.Select(track => track.Id), false), currentDevice is not null);
             AddMenuAction(menu, "Edit metadata / artwork…", () => EditTrackMetadata(tracks));
+            var allExcluded = tracks.All(track => track.ExcludeFromShuffle);
+            AddMenuAction(menu, "Exclude from shuffle", () =>
+            {
+                var target = !allExcluded;
+                var affected = tracks.Where(track => track.ExcludeFromShuffle != target).ToList();
+                if (affected.Count == 0) return;
+                RecordEdit(target ? "Exclude from shuffle" : "Include in shuffle",
+                    () => affected.ForEach(track => track.ExcludeFromShuffle = !target),
+                    () => affected.ForEach(track => track.ExcludeFromShuffle = target));
+                affected.ForEach(track => track.ExcludeFromShuffle = target);
+                SaveLibrary();
+            }).IsChecked = allExcluded;
             var addTo = new MenuItem { Header = "Add to playlist", IsEnabled = ContextActionsAvailable };
             menu.Items.Add(addTo);
             AddMenuAction(addTo, "New playlist…", () =>
@@ -174,8 +187,31 @@ public partial class MainWindow
                 });
             AddMenuAction(menu, "Remove from library…", () => RemoveContextTracks(tracks));
         }
+        if (isIPodView)
+        {
+            var deviceMusic = tracks.Where(track => !track.IsPodcast).ToList();
+            if (deviceMusic.Count > 0)
+                AddMenuAction(menu, "Remove from iPod…", () => RemoveTracksFromDeviceAsync(deviceMusic), currentDevice is not null);
+        }
         if (tracks.Count == 1)
             AddMenuAction(menu, "Show file in Explorer", () => RevealFile(tracks[0].FilePath), File.Exists(tracks[0].FilePath));
+    }
+
+    private async Task RemoveTracksFromDeviceAsync(List<Track> deviceTracks)
+    {
+        if (currentDevice is not { } device) return;
+        if (MessageBox.Show(this, $"Remove {deviceTracks.Count} track(s) from {device.Name}?\n\nThe song files are deleted from the iPod. Your library is not changed.",
+            "Remove from iPod", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        var paths = deviceTracks.Select(track => track.FilePath).ToList();
+        deviceTimer.Stop();
+        try
+        {
+            var removed = await Task.Run(() => IPodTrackRemovalService.Remove(device.RootPath, paths));
+            await LoadIPodTracksAsync(device);
+            DebugLog.Write("iPod", $"Removed {removed} track(s) from device");
+            MessageBox.Show(this, $"Removed {removed} track(s) from {device.Name}.", "Remove from iPod");
+        }
+        finally { deviceTimer.Start(); RefreshDevice(); }
     }
 
     private void PlayContextTracks(List<Track> tracks)
@@ -186,10 +222,37 @@ public partial class MainWindow
         PlaySelected();
     }
 
+    private static bool IsHTunesManagedFile(Track track)
+    {
+        if (string.IsNullOrWhiteSpace(track.FilePath)) return false;
+        var file = Path.GetFullPath(track.FilePath);
+        foreach (var directory in new[] { SettingsStore.Current.ImportDirectory, SettingsStore.Current.DownloadDirectory })
+            if (!string.IsNullOrWhiteSpace(directory) &&
+                file.StartsWith(Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory)) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                return true;
+        return false;
+    }
+
     private void RemoveContextTracks(List<Track> tracks)
     {
-        if (MessageBox.Show(this, $"Remove {tracks.Count} selected track(s) from the library and all playlists?\n\nThe original files will NOT be deleted.",
-            "Remove from library", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        var managed = tracks.Where(IsHTunesManagedFile).Where(track => File.Exists(track.FilePath)).ToList();
+        bool deleteFiles;
+        if (managed.Count > 0)
+        {
+            var choice = MessageBox.Show(this,
+                $"Remove {tracks.Count} selected track(s) from the library and all playlists?\n\n" +
+                $"{managed.Count} of these file(s) live in your hTunes music/download folders.\n\n" +
+                "Yes — also delete those files from disk\nNo — remove the library entries only, keep every file\nCancel — do nothing",
+                "Remove from library", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
+            if (choice == MessageBoxResult.Cancel) return;
+            deleteFiles = choice == MessageBoxResult.Yes;
+        }
+        else
+        {
+            if (MessageBox.Show(this, $"Remove {tracks.Count} selected track(s) from the library and all playlists?\n\nThe original files will NOT be deleted.",
+                "Remove from library", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            deleteFiles = false;
+        }
         var ids = tracks.Select(track => track.Id).ToHashSet();
         var before = allTracks.ToList();
         var membershipsBefore = Playlists.ToDictionary(playlist => playlist, playlist => playlist.TrackIds.ToList());
@@ -207,7 +270,37 @@ public partial class MainWindow
             foreach (var (playlist, members) in membershipsAfter) playlist.TrackIds = members.ToList();
         });
         SaveLibrary();
+        if (deleteFiles)
+        {
+            var failed = 0;
+            if (player.Source is { IsFile: true } source && managed.Any(track => Same(track.FilePath, source.LocalPath))) { player.Stop(); player.Close(); ResetNowPlaying(); }
+            foreach (var track in managed)
+                try { if (File.Exists(track.FilePath)) File.Delete(track.FilePath); }
+                catch (Exception ex) { failed++; DebugLog.Write("Library", $"Could not delete {track.FilePath}", ex); }
+            if (failed > 0) MessageBox.Show(this, $"{failed} file(s) could not be deleted and were kept on disk.", "Remove from library");
+        }
         RefreshBrowser();
+    }
+
+    private void BuildIPodPlaylistMenu(ItemsControl menu)
+    {
+        if (IPodPlaylistList.SelectedItem is not IPodPlaylistView view || currentDevice is null) return;
+        AddMenuAction(menu, "Refresh iPod playlists", async () => { if (currentDevice is not null) await LoadIPodTracksAsync(currentDevice); });
+        AddMenuAction(menu, "Delete this playlist from the iPod…", () => DeleteIPodPlaylistAsync(view), !view.IsSmart && !view.IsPodcast);
+    }
+
+    private async Task DeleteIPodPlaylistAsync(IPodPlaylistView view)
+    {
+        if (currentDevice is not { } device) return;
+        if (MessageBox.Show(this, $"Delete the playlist “{view.Name}” from {device.Name}?\n\nThe songs stay on the iPod; only the playlist is removed.",
+            "Delete iPod playlist", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        deviceTimer.Stop();
+        try
+        {
+            await Task.Run(() => IPodPlaylistReader.Delete(device.RootPath, view.Name));
+            await LoadIPodTracksAsync(device);
+        }
+        finally { deviceTimer.Start(); RefreshDevice(); }
     }
 
     private void BuildPlaylistMenu(ItemsControl menu)
@@ -223,8 +316,11 @@ public partial class MainWindow
                 var name = AskPlaylistName("Rename playlist", playlist.Name);
                 if (name is null) return;
                 var before = playlist.Name;
+                if (before == name) return;
                 playlist.Name = name;
-                if (before != name) RecordEdit("Rename playlist", () => playlist.Name = before, () => playlist.Name = name);
+                if (!before.Equals(name, StringComparison.OrdinalIgnoreCase) && !playlist.PreviousNames.Contains(before, StringComparer.OrdinalIgnoreCase))
+                    playlist.PreviousNames.Add(before); // let the next iPod sync drop the old-named playlist
+                RecordEdit("Rename playlist", () => playlist.Name = before, () => playlist.Name = name);
                 SaveLibrary();
                 RefreshPlaylistView(playlist);
             });

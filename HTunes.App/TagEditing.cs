@@ -1,11 +1,12 @@
 using System.IO;
+using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
 namespace HTunes.App;
 
 internal sealed record TagPatch(IReadOnlyDictionary<string, string> Fields, bool ChangeArtwork = false, string? Artwork = null,
-    bool ResizeArtwork = false, int Width = 600, int Height = 600, bool MarkAutoTagged = false)
+    bool ResizeArtwork = false, int Width = 600, int Height = 600, bool MarkAutoTagged = false, bool CropArtwork = false)
 {
     public bool HasChanges => Fields.Count > 0 || ChangeArtwork || ResizeArtwork || MarkAutoTagged;
     public void Validate()
@@ -30,13 +31,27 @@ internal static class TagArtwork
         frame.Freeze(); return frame;
     }
 
-    public static string Prepare(string path, string directory, int? width = null, int? height = null)
+    public static string Prepare(string path, string directory, int? width = null, int? height = null, bool crop = false)
     {
         BitmapSource bitmap = Read(path);
         if (width is not null && height is not null)
         {
-            var scale = Math.Min((double)width.Value / bitmap.PixelWidth, (double)height.Value / bitmap.PixelHeight);
-            if (Math.Abs(scale - 1) > 0.001) { bitmap = new TransformedBitmap(bitmap, new ScaleTransform(scale, scale)); bitmap.Freeze(); }
+            if (crop)
+            {
+                var scale = Math.Max((double)width.Value / bitmap.PixelWidth, (double)height.Value / bitmap.PixelHeight);
+                if (Math.Abs(scale - 1) > 0.001) { bitmap = new TransformedBitmap(bitmap, new ScaleTransform(scale, scale)); bitmap.Freeze(); }
+                var cropWidth = Math.Min(width.Value, bitmap.PixelWidth);
+                var cropHeight = Math.Min(height.Value, bitmap.PixelHeight);
+                var x = Math.Max(0, (bitmap.PixelWidth - cropWidth) / 2);
+                var y = Math.Max(0, (bitmap.PixelHeight - cropHeight) / 2);
+                bitmap = new CroppedBitmap(bitmap, new Int32Rect(x, y, cropWidth, cropHeight));
+                bitmap.Freeze();
+            }
+            else
+            {
+                var scale = Math.Min((double)width.Value / bitmap.PixelWidth, (double)height.Value / bitmap.PixelHeight);
+                if (Math.Abs(scale - 1) > 0.001) { bitmap = new TransformedBitmap(bitmap, new ScaleTransform(scale, scale)); bitmap.Freeze(); }
+            }
         }
         Directory.CreateDirectory(directory);
         var destination = Path.Combine(directory, "tag-" + Guid.NewGuid().ToString("N") + ".png");
@@ -58,7 +73,7 @@ internal sealed class TagBatchEdit
             int NumberValue(string field, int fallback) => patch.Fields.TryGetValue(field, out var value) ? int.Parse(value) : fallback;
             var art = patch.ChangeArtwork ? patch.Artwork : Artwork;
             if (art is not null && (patch.ChangeArtwork || patch.ResizeArtwork))
-                art = TagArtwork.Prepare(art, artworkDirectory, patch.ResizeArtwork ? patch.Width : null, patch.ResizeArtwork ? patch.Height : null);
+                art = TagArtwork.Prepare(art, artworkDirectory, patch.ResizeArtwork ? patch.Width : null, patch.ResizeArtwork ? patch.Height : null, patch.ResizeArtwork && patch.CropArtwork);
             var next = new Values(Text("Title", Title), Text("Artist", Artist), Text("AlbumArtist", AlbumArtist), Text("Album", Album), Text("Genre", Genre), NumberValue("TrackNumber", Number), NumberValue("DiscNumber", Disc), NumberValue("Year", Year), art, true, false, AutoTagged || patch.MarkAutoTagged, Previous.ToList());
             if (TrackIdentity.Key(next.Title, next.Artist, next.Album, next.Number) != TrackIdentity.Key(Title, Artist, Album, Number))
             {

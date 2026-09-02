@@ -13,6 +13,39 @@ internal sealed record IPodPlaylistSyncResult(string Name, int Tracks, int Missi
 
 internal static class IPodPlaylistSyncService
 {
+    // Full library -> iPod playlist reconciliation: every library playlist is upserted (membership rebuilt),
+    // and device playlists left behind by a rename are removed. On-device playlists hTunes never created are untouched.
+    public static IReadOnlyList<IPodPlaylistSyncResult> SyncAll(string rootPath, IReadOnlyCollection<Playlist> playlists, IReadOnlyCollection<Track> library)
+    {
+        var currentNames = playlists.Select(playlist => playlist.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var renamedAway = playlists.SelectMany(playlist => playlist.PreviousNames)
+            .Where(name => !currentNames.Contains(name)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (renamedAway.Count > 0) RemovePlaylists(rootPath, renamedAway);
+        var results = new List<IPodPlaylistSyncResult>();
+        foreach (var source in playlists) results.Add(Sync(rootPath, source, library));
+        return results;
+    }
+
+    private static void RemovePlaylists(string rootPath, IReadOnlySet<string> names)
+    {
+        var ipod = IPod.GetiPodByDrive(rootPath, IPodLoadAction.NoSync);
+        ipod.AssertIsWritable();
+        var backup = BackupDatabase(rootPath);
+        Clickwheel.IPodBackup.EnableBackups = false;
+        ipod.AcquireLock();
+        try
+        {
+            var all = new List<IPodPlaylist>();
+            foreach (var playlist in ipod.Playlists) all.Add(playlist);
+            foreach (var playlist in all)
+                if (!playlist.IsMaster && !playlist.IsSmartPlaylist && !playlist.IsPodcastPlaylist && names.Contains(playlist.Name))
+                    ipod.Playlists.Remove(playlist, false);
+            ipod.SaveChanges();
+        }
+        catch { try { RestoreDatabase(backup); } catch { } throw; }
+        finally { try { ipod.ReleaseLock(); } catch { } }
+    }
+
     public static IPodPlaylistSyncResult Sync(string rootPath, Playlist source, IReadOnlyCollection<Track> library)
     {
         var ipod = IPod.GetiPodByDrive(rootPath, IPodLoadAction.NoSync);

@@ -14,6 +14,29 @@ public partial class MainWindow
     private int ytImportedCount;
     private int ytImportFailures;
 
+    private sealed record TagOverrides(string Artist, string AlbumArtist, string Album, string Genre)
+    {
+        public bool Any => new[] { Artist, AlbumArtist, Album, Genre }.Any(value => !string.IsNullOrWhiteSpace(value));
+    }
+
+    private void InitializeDownloadOverrides()
+    {
+        foreach (var (box, selector) in new (TextBox, Func<Track, string>)[]
+        {
+            (DownloadOverrideArtist, track => track.Artist),
+            (DownloadOverrideAlbumArtist, track => track.AlbumArtist),
+            (DownloadOverrideAlbum, track => track.Album),
+            (DownloadOverrideGenre, track => track.Genre),
+        })
+        {
+            var select = selector;
+            TextBoxAutoComplete.Attach(box, () => allTracks.Select(select)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.CurrentCultureIgnoreCase)
+                .OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase));
+        }
+    }
+
     private async void DownloadLinks_Click(object sender, RoutedEventArgs e)
     {
         if (isYtDownloading || StartupCheckInProgress || !ContextActionsAvailable) return;
@@ -40,6 +63,7 @@ public partial class MainWindow
         ytDownloadCancellation = new CancellationTokenSource();
         var token = ytDownloadCancellation.Token;
         var settings = SettingsStore.Current.Clone();
+        var overrides = new TagOverrides(DownloadOverrideArtist.Text.Trim(), DownloadOverrideAlbumArtist.Text.Trim(), DownloadOverrideAlbum.Text.Trim(), DownloadOverrideGenre.Text.Trim());
         string? workingDirectory = null;
         var failedLinks = 0;
         var finishedLinks = 0;
@@ -103,7 +127,7 @@ public partial class MainWindow
                     foreach (var file in result.Files)
                     {
                         DownloadStatus.Text = "Adding finished audio to the library…";
-                        await ImportYtAudioAsync(file, settings);
+                        await ImportYtAudioAsync(file, settings, overrides);
                     }
                     if (result.Aborted) break;
                     finishedLinks++;
@@ -134,8 +158,9 @@ public partial class MainWindow
         }
     }
 
-    private async Task ImportYtAudioAsync(YtCompletedFile file, AppPreferences settings)
+    private async Task ImportYtAudioAsync(YtCompletedFile file, AppPreferences settings, TagOverrides? overrides = null)
     {
+        overrides ??= new TagOverrides("", "", "", "");
         try
         {
             if (!YtDlpDownloadService.IsCompletedAudioPath(file.Path, settings.DownloadDirectory)) throw new IOException("The finished audio is no longer available in the download folder.");
@@ -151,6 +176,11 @@ public partial class MainWindow
             var track = new Track { FilePath = file.Path, OriginalImportPath = file.Path, DownloadIdentity = file.Identity,
                 Title = string.IsNullOrWhiteSpace(file.Title) ? Path.GetFileNameWithoutExtension(file.Path) : file.Title, DateAdded = DateTime.Now, IsNew = true };
             await Task.Run(() => MediaMetadata.ReadInto(track));
+            if (!string.IsNullOrWhiteSpace(overrides.Artist)) track.Artist = overrides.Artist;
+            if (!string.IsNullOrWhiteSpace(overrides.AlbumArtist)) track.AlbumArtist = overrides.AlbumArtist;
+            if (!string.IsNullOrWhiteSpace(overrides.Album)) track.Album = overrides.Album;
+            if (!string.IsNullOrWhiteSpace(overrides.Genre)) track.Genre = overrides.Genre;
+            if (overrides.Any) track.MetadataManagedByLibrary = true;
             var imported = await Task.Run(() => ImportFileService.Prepare(file.Path, settings, track.Artist, track.AlbumArtist, track.Album));
             track.FilePath = imported.LibraryPath;
             var before = allTracks.ToList();
@@ -177,7 +207,11 @@ public partial class MainWindow
         ytDownloadCancellation?.Cancel();
     }
 
-    private void ClearDownloadLinks_Click(object sender, RoutedEventArgs e) => DownloadLinksBox.Clear();
+    private void ClearDownloadLinks_Click(object sender, RoutedEventArgs e)
+    {
+        DownloadLinksBox.Clear();
+        DownloadOverrideArtist.Clear(); DownloadOverrideAlbumArtist.Clear(); DownloadOverrideAlbum.Clear(); DownloadOverrideGenre.Clear();
+    }
 
     private void ClearTextButton_Click(object sender, RoutedEventArgs e)
     {

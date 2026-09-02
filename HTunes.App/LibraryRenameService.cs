@@ -7,7 +7,8 @@ namespace HTunes.App;
 internal enum RenameMode { FileName, MetadataFileName, FileNameToTitle }
 
 internal sealed record RenameOptions(RenameMode Mode = RenameMode.FileName, bool Replace = false, string Find = "", string Replacement = "",
-    bool Remove = false, string RemoveText = "", bool TrimFront = false, int FrontCount = 0, bool TrimEnd = false, int EndCount = 0,
+    bool Remove = false, string RemoveText = "", bool CutBefore = false, string CutBeforeText = "", bool CutAfter = false, string CutAfterText = "",
+    bool TrimFront = false, int FrontCount = 0, bool TrimEnd = false, int EndCount = 0,
     bool Prepend = false, string Prefix = "", bool Append = false, string Suffix = "", bool IgnoreCase = false)
 {
     public void Validate()
@@ -15,6 +16,8 @@ internal sealed record RenameOptions(RenameMode Mode = RenameMode.FileName, bool
         if (Mode == RenameMode.FileNameToTitle) return;
         if (Replace && Find.Length == 0) throw new ArgumentException("Enter the text to replace.");
         if (Remove && RemoveText.Length == 0) throw new ArgumentException("Enter the text to remove.");
+        if (CutBefore && CutBeforeText.Length == 0) throw new ArgumentException("Enter the text to cut before.");
+        if (CutAfter && CutAfterText.Length == 0) throw new ArgumentException("Enter the text to cut after.");
         if ((TrimFront && FrontCount is < 0 or > 100000) || (TrimEnd && EndCount is < 0 or > 100000)) throw new ArgumentException("Trim counts must be whole numbers from 0 to 100000.");
     }
 
@@ -27,6 +30,10 @@ internal sealed record RenameOptions(RenameMode Mode = RenameMode.FileName, bool
         var comparison = IgnoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         if (Replace) stem = stem.Replace(Find, Replacement, comparison);
         if (Remove) stem = stem.Replace(RemoveText, "", comparison);
+        if (CutBefore && CutBeforeText.Length > 0 && stem.IndexOf(CutBeforeText, comparison) is var cutBeforeAt and >= 0)
+            stem = stem[(cutBeforeAt + CutBeforeText.Length)..];
+        if (CutAfter && CutAfterText.Length > 0 && stem.IndexOf(CutAfterText, comparison) is var cutAfterAt and >= 0)
+            stem = stem[..cutAfterAt];
         if (TrimFront) stem = Trim(stem, FrontCount, true);
         if (TrimEnd) stem = Trim(stem, EndCount, false);
         if (Prepend) stem = Prefix + stem;
