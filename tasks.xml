@@ -54,8 +54,8 @@
     <name>redesign the UI</name>
     <prompt>go through and redesign the UI using the instructions in design.txt specifically zUI. ensure complicance with the theme and to preserve ALL functionality. DO NOT execute past this task until i approve, stop once this is finished (and submitted) and await further instructions from me.</prompt>
     <requirements />
-    <inProgress>true</inProgress>
-    <done>false</done>
+    <inProgress>false</inProgress>
+    <done>true</done>
     <bug>false</bug>
     <error>false</error>
     <errorMessage />
