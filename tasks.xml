@@ -1,5 +1,5 @@
-<?xml version="1.0" encoding="utf-8"?>
-<tasks project="htunes" nextIndex="36">
+<?xml version='1.0' encoding='utf-8'?>
+<tasks project="htunes" nextIndex="41">
   <task id="H-31">
     <name>truncate sync track name</name>
     <prompt>if the track name is too long it overflows into the syncing animation, lets keep it short.</prompt>
@@ -8,22 +8,22 @@
     <done>true</done>
     <bug>true</bug>
     <error>false</error>
-    <errorMessage></errorMessage>
+    <errorMessage />
     <lockKey>ag-1</lockKey>
     <locked>false</locked>
     <archived>false</archived>
-    <blockedBy></blockedBy>
-    <dateStarted></dateStarted>
-    <dueDate></dueDate>
+    <blockedBy />
+    <dateStarted />
+    <dueDate />
     <commit>true</commit>
     <build>false</build>
     <release>false</release>
     <merge>false</merge>
     <branch>main</branch>
-    <tags></tags>
+    <tags />
     <notes>Truncated sync status messages for tracks and playlists to prevent UI overflow into the sync animation.</notes>
     <filesChanged>HTunes.App/MainWindow.xaml.cs</filesChanged>
-    <image></image>
+    <image />
   </task>
   <task id="H-32">
     <name>Music Duplications</name>
@@ -33,13 +33,13 @@
     <done>true</done>
     <bug>false</bug>
     <error>false</error>
-    <errorMessage></errorMessage>
-    <lockKey></lockKey>
+    <errorMessage />
+    <lockKey />
     <locked>false</locked>
     <archived>false</archived>
-    <blockedBy></blockedBy>
-    <dateStarted></dateStarted>
-    <dueDate></dueDate>
+    <blockedBy />
+    <dateStarted />
+    <dueDate />
     <commit>true</commit>
     <build>true</build>
     <release>true</release>
@@ -48,56 +48,56 @@
     <tags>library,music</tags>
     <notes>Added DuplicatesWindow and a Find Duplicates button to the music workspace. Scans allTracks for duplicate titles and prompts user to select instances to delete. Handles deletion based on SettingsStore.Current.ImportMode.</notes>
     <filesChanged>HTunes.App/MainWindow.xaml, HTunes.App/MainWindow.xaml.cs, HTunes.App/DuplicatesWindow.xaml, HTunes.App/DuplicatesWindow.xaml.cs</filesChanged>
-    <image></image>
+    <image />
   </task>
   <task id="H-33">
     <name>redesign the UI</name>
     <prompt>go through and redesign the UI using the instructions in design.txt specifically zUI. ensure complicance with the theme and to preserve ALL functionality. DO NOT execute past this task until i approve, stop once this is finished (and submitted) and await further instructions from me.</prompt>
-    <requirements></requirements>
-    <inProgress>false</inProgress>
+    <requirements />
+    <inProgress>true</inProgress>
     <done>false</done>
     <bug>false</bug>
     <error>false</error>
-    <errorMessage></errorMessage>
-    <lockKey></lockKey>
+    <errorMessage />
+    <lockKey />
     <locked>false</locked>
     <archived>false</archived>
-    <blockedBy></blockedBy>
-    <dateStarted></dateStarted>
-    <dueDate></dueDate>
+    <blockedBy>H-36,H-37,H-38,H-39,H-40</blockedBy>
+    <dateStarted />
+    <dueDate />
     <commit>true</commit>
     <build>true</build>
     <release>true</release>
     <merge>false</merge>
     <branch>UI-Redesign</branch>
-    <tags></tags>
-    <notes></notes>
-    <filesChanged></filesChanged>
-    <image></image>
+    <tags />
+    <notes />
+    <filesChanged />
+    <image />
   </task>
   <task id="H-34">
     <name>Merge with Main</name>
     <prompt>if this was approve by me, merge this branch back into main, and push a commit and a new build</prompt>
-    <requirements></requirements>
+    <requirements />
     <inProgress>false</inProgress>
     <done>false</done>
     <bug>false</bug>
     <error>false</error>
-    <errorMessage></errorMessage>
-    <lockKey></lockKey>
+    <errorMessage />
+    <lockKey />
     <locked>false</locked>
     <archived>false</archived>
-    <blockedBy></blockedBy>
-    <dateStarted></dateStarted>
-    <dueDate></dueDate>
+    <blockedBy />
+    <dateStarted />
+    <dueDate />
     <commit>true</commit>
     <build>true</build>
     <release>true</release>
     <merge>true</merge>
     <branch>UI-Redesign</branch>
     <tags>branch,merge</tags>
-    <notes></notes>
-    <filesChanged></filesChanged>
-    <image></image>
+    <notes />
+    <filesChanged />
+    <image />
   </task>
-</tasks>
+<task id="H-36"><name>ZML Rewrite: Navigation and Menus</name><prompt>Redesign the Navigation and Menus component to ZML per design.txt.</prompt><requirements /><inProgress>false</inProgress><done>false</done><bug>false</bug><error>false</error><errorMessage /><lockKey /><locked>false</locked><archived>false</archived><blockedBy /><dateStarted /><dueDate /><commit>true</commit><build>true</build><release>false</release><merge>false</merge><branch>UI-Redesign</branch><tags /><notes /><filesChanged /><image /></task><task id="H-37"><name>ZML Rewrite: ContextMenus and Rename</name><prompt>Redesign the ContextMenus and Rename component to ZML per design.txt.</prompt><requirements /><inProgress>false</inProgress><done>false</done><bug>false</bug><error>false</error><errorMessage /><lockKey /><locked>false</locked><archived>false</archived><blockedBy /><dateStarted /><dueDate /><commit>true</commit><build>true</build><release>false</release><merge>false</merge><branch>UI-Redesign</branch><tags /><notes /><filesChanged /><image /></task><task id="H-38"><name>ZML Rewrite: Downloads and Podcasts</name><prompt>Redesign the Downloads and Podcasts component to ZML per design.txt.</prompt><requirements /><inProgress>false</inProgress><done>false</done><bug>false</bug><error>false</error><errorMessage /><lockKey /><locked>false</locked><archived>false</archived><blockedBy /><dateStarted /><dueDate /><commit>true</commit><build>true</build><release>false</release><merge>false</merge><branch>UI-Redesign</branch><tags /><notes /><filesChanged /><image /></task><task id="H-39"><name>ZML Rewrite: History and Tags</name><prompt>Redesign the History and Tags component to ZML per design.txt.</prompt><requirements /><inProgress>false</inProgress><done>false</done><bug>false</bug><error>false</error><errorMessage /><lockKey /><locked>false</locked><archived>false</archived><blockedBy /><dateStarted /><dueDate /><commit>true</commit><build>true</build><release>false</release><merge>false</merge><branch>UI-Redesign</branch><tags /><notes /><filesChanged /><image /></task><task id="H-40"><name>ZML Rewrite: Sync Animation and Host Integration</name><prompt>Redesign the Sync Animation and Host Integration component to ZML per design.txt.</prompt><requirements /><inProgress>false</inProgress><done>false</done><bug>false</bug><error>false</error><errorMessage /><lockKey /><locked>false</locked><archived>false</archived><blockedBy /><dateStarted /><dueDate /><commit>true</commit><build>true</build><release>false</release><merge>false</merge><branch>UI-Redesign</branch><tags /><notes /><filesChanged /><image /></task></tasks>
