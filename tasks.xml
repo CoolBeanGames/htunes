@@ -30,7 +30,7 @@
     <prompt>add a new tool to the music tab, when selected it scans your library for songs with duplicate titles. it then presents you each one after another in a pop up window. for each set it lists all the titles with artits and album info. you can tick checkmarks then hit delete. if the mode is set to copy or move the file is deleted and its removed from the library, if its reference only its just removed from the library. next sync its removed from the ipod if its present there.</prompt>
     <requirements>music duplication is in</requirements>
     <inProgress>false</inProgress>
-    <done>false</done>
+    <done>true</done>
     <bug>false</bug>
     <error>false</error>
     <errorMessage></errorMessage>
@@ -46,8 +46,8 @@
     <merge>false</merge>
     <branch>main</branch>
     <tags>library,music</tags>
-    <notes></notes>
-    <filesChanged></filesChanged>
+    <notes>Added DuplicatesWindow and a Find Duplicates button to the music workspace. Scans allTracks for duplicate titles and prompts user to select instances to delete. Handles deletion based on SettingsStore.Current.ImportMode.</notes>
+    <filesChanged>HTunes.App/MainWindow.xaml, HTunes.App/MainWindow.xaml.cs, HTunes.App/DuplicatesWindow.xaml, HTunes.App/DuplicatesWindow.xaml.cs</filesChanged>
     <image></image>
   </task>
   <task id="H-33">

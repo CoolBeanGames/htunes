@@ -185,7 +185,7 @@ public partial class MainWindow : Window
                 : $"{viewTracks.Count(track => !track.IsPodcast)} song{(viewTracks.Count(track => !track.IsPodcast) == 1 ? "" : "s")} on {currentDevice?.Name ?? "iPod"}"
             : $"{viewTracks.Count} song{(viewTracks.Count == 1 ? "" : "s")} in your library";
         PlaylistsHeading.Visibility = PlaylistList.Visibility = isIPodView ? Visibility.Collapsed : Visibility.Visible;
-        NewPlaylistButton.Visibility = isIPodView ? Visibility.Collapsed : Visibility.Visible;
+        NewPlaylistRowPanel.Visibility = isIPodView ? Visibility.Collapsed : Visibility.Visible;
         IPodPlaylistsHeading.Visibility = IPodPlaylistList.Visibility = isIPodView ? Visibility.Visible : Visibility.Collapsed;
         PlaylistsHeadingRow.Height = isIPodView ? GridLength.Auto : GridLength.Auto;
         NewPlaylistRow.Height = isIPodView ? new GridLength(0) : GridLength.Auto;
@@ -443,6 +443,67 @@ public partial class MainWindow : Window
         if (isIPodView) return;
         var selected = SelectedTracks();
         if (selected.Count > 0) RemoveContextTracks(selected);
+    }
+
+    private void FindDuplicates_Click(object sender, RoutedEventArgs e)
+    {
+        if (isIPodView) return;
+        var duplicates = allTracks
+            .GroupBy(t => t.Title, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.ToList())
+            .ToList();
+
+        if (duplicates.Count == 0)
+        {
+            MessageBox.Show(this, "No duplicate tracks found in your library.", "Find duplicates", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var window = new DuplicatesWindow(duplicates) { Owner = this };
+        if (window.ShowDialog() == true && window.TracksToDelete.Count > 0)
+        {
+            var toDelete = window.TracksToDelete;
+            var ids = toDelete.Select(t => t.Id).ToHashSet();
+            var mode = SettingsStore.Current.ImportMode;
+            var before = allTracks.ToList();
+            var membershipsBefore = Playlists.ToDictionary(playlist => playlist, playlist => playlist.TrackIds.ToList());
+            
+            allTracks.RemoveAll(track => ids.Contains(track.Id));
+            foreach (var playlist in Playlists) playlist.TrackIds.RemoveAll(ids.Contains);
+            
+            var after = allTracks.ToList();
+            var membershipsAfter = Playlists.ToDictionary(playlist => playlist, playlist => playlist.TrackIds.ToList());
+            
+            RecordEdit("Remove duplicate tracks", () =>
+            {
+                allTracks = before.ToList();
+                foreach (var (playlist, members) in membershipsBefore) playlist.TrackIds = members.ToList();
+            }, () =>
+            {
+                allTracks = after.ToList();
+                foreach (var (playlist, members) in membershipsAfter) playlist.TrackIds = members.ToList();
+            });
+
+            if (mode == ImportFileMode.Copy || mode == ImportFileMode.Move)
+            {
+                foreach (var track in toDelete)
+                {
+                    try
+                    {
+                        if (File.Exists(track.FilePath))
+                            File.Delete(track.FilePath);
+                    }
+                    catch (Exception ex)
+                    {
+                        DebugLog.Write("Duplicates", $"Failed to delete file {track.FilePath}", ex);
+                    }
+                }
+            }
+
+            SaveLibrary();
+            RefreshBrowser();
+        }
     }
 
     private void NewPlaylist_Click(object sender, RoutedEventArgs e)

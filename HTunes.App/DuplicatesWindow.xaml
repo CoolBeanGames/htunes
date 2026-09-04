@@ -1,0 +1,52 @@
+<Window x:Class="HTunes.App.DuplicatesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Resolve Duplicates" Width="800" Height="450" WindowStartupLocation="CenterOwner" Background="#F4F5F7">
+    <Window.Resources>
+        <SolidColorBrush x:Key="Line" Color="#D8DCE3"/>
+    </Window.Resources>
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="StatusText" Text="Set 1 of 5: 'Song Title'" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,10"/>
+
+        <Border Grid.Row="1" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="6" Margin="0,0,0,10">
+            <DataGrid x:Name="DuplicatesGrid" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
+                      HeadersVisibility="Column" GridLinesVisibility="Horizontal" BorderThickness="0" Background="White"
+                      AlternatingRowBackground="#FAFBFC">
+                <DataGrid.Columns>
+                    <DataGridTemplateColumn Header="Delete" Width="60">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <CheckBox IsChecked="{Binding ShouldDelete, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="Title" Binding="{Binding Track.Title}" Width="2*"/>
+                    <DataGridTextColumn Header="Artist" Binding="{Binding Track.Artist}" Width="*"/>
+                    <DataGridTextColumn Header="Album" Binding="{Binding Track.Album}" Width="*"/>
+                    <DataGridTextColumn Header="Format" Binding="{Binding Track.Format}" Width="70"/>
+                    <DataGridTextColumn Header="Bitrate" Binding="{Binding Track.BitrateDisplay}" Width="70"/>
+                    <DataGridTextColumn Header="Added" Binding="{Binding Track.DateAdded, StringFormat=d}" Width="90"/>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Border>
+
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Button Content="Skip" Click="Skip_Click" Padding="12,6" MinWidth="80" Background="White" BorderBrush="{StaticResource Line}"/>
+            <StackPanel Grid.Column="2" Orientation="Horizontal">
+                <Button Content="Cancel" Click="Cancel_Click" Padding="12,6" MinWidth="80" Background="White" BorderBrush="{StaticResource Line}" Margin="0,0,10,0"/>
+                <Button x:Name="DeleteNextButton" Content="Delete selected &amp; Next" Click="DeleteNext_Click" Padding="12,6" MinWidth="140" Background="#2D6CDF" Foreground="White"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>
