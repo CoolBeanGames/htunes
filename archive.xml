@@ -1,0 +1,791 @@
+<?xml version="1.0" encoding="utf-8"?>
+<tasks project="htunes" nextIndex="36">
+  <task id="H-30">
+    <name>sync failure</name>
+    <prompt>I had a sync fail and got the attached error, this needs fixed</prompt>
+    <requirements>fix the error in the image</requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>true</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-02 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>priority,bug</tags>
+    <notes>The sync failure came from a duplicate iPod identity that the replacement precheck could miss. hTunes grouped tracks by Title/Artist/Album/TrackNumber but retained only the first record; when that first record was the copy being replaced, a second matching record stayed hidden until Clickwheel rejected the replacement and the whole sync rolled back. IPodSyncService now retains every record in an identity group and explicitly finds a different copy, adopts it, marks the source current, and skips that track before modifying device files. Added a final defensive catch around the replacement Add: if Clickwheel still reports a duplicate, hTunes adopts/skips the surviving copy, restores any missing playlist memberships, counts it as already present, and continues the rest of the batch instead of failing the sync. Added a regression assertion for the first-record-hides-second-duplicate case. Full app and regression-check builds succeeded with zero warnings/errors; all ContextMenuChecks pass. Device write path not runtime-tested because no iPod is available.</notes>
+    <filesChanged>HTunes.App/IPodSyncService.cs, tests/HTunes.ContextMenuChecks/Program.cs, tasks.xml</filesChanged>
+    <image>H-30.png</image>
+  </task>
+  <task id="H-29">
+    <name>Clicking Sync music Syncs ALL music and replaces everything even stuff that hasnt changed</name>
+    <prompt>Clicking Sync music Syncs ALL music and replaces everything even stuff that hasnt changed</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>true</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-02 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>true</commit>
+    <build>true</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags></tags>
+    <notes>Root cause: in IPodSyncService.Sync the per-track "does this need copying?" test OR'd the NeedsReplacement heuristic in unconditionally - even for a track whose stored per-device fingerprint exactly matched its current state. NeedsReplacement re-derives format/bitrate/metadata from the device copy and the source file and throws false positives (e.g. a device that reports an empty AlbumArtist, VBR bitrate drift, a path that doesn't resolve), so every unchanged track was re-copied on every "Sync music" run. Fix: the fingerprint is now authoritative. If the track already carries THIS device's last-sync fingerprint and it matches the freshly computed one, the iPod copy is left alone - the only thing that still forces a re-copy in that case is the media file having physically disappeared from the device (new IPodMediaPresent check). NeedsReplacement is still used for legacy/first-time entries that have no stored fingerprint yet, and a changed fingerprint still triggers replacement as before. Extracted the pure check as IPodSyncService.FingerprintMatchesLastSync and covered it in CheckNewStateAndSyncIdentity (never-synced -&gt; not current; matching fingerprint -&gt; current; per-device isolation; edit -&gt; drops out of current). Build clean to builds/debug, all ContextMenuChecks pass. Device write path not runtime-tested (no iPod) but the change only makes the candidate set smaller.</notes>
+    <filesChanged>HTunes.App/IPodSyncService.cs, tests/HTunes.ContextMenuChecks/Program.cs, tasks.xml</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-26">
+    <name>cancelling sync throws an exception</name>
+    <prompt>and ending sync takes forever, also "preparing podcasts" step also takes ages for sync</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>true</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-02 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags></tags>
+    <notes>Three problems, all in the sync-cancel path.
+(1) "Throws an exception": stopping a podcast sync mid-download hit the generic catch in DownloadPodcastEpisodeCoreAsync and popped an "Episode download failed" error dialog, because PodcastService.DownloadEpisodeAsync was called with no CancellationToken and the OperationCanceledException from the aborted HTTP read was treated as a real failure. Fixed: threaded syncToken through DownloadPodcastEpisodeAsync/Core into DownloadEpisodeAsync; Core now rethrows OperationCanceledException instead of showing the failure dialog. StopSync_Click now also swallows ObjectDisposedException if the CTS was disposed by a race.
+(2) "Ending sync takes forever": on cancel, IPodSyncService.Sync went through its full failure rollback (delete every copied file + restore the iTunesDB) before rethrowing. Now cancellation is cooperative: the copy loop checks IsCancellationRequested between files, breaks, and commits what was copied so far via the normal SaveChanges path. New SyncResult.Cancelled flag; SyncTracksAsync sees it, skips playlist reconciliation, reloads the device list, and shows a "Sync stopped" info dialog (no rollback, no error). PodcastIPodSyncService.Sync gained the same CancellationToken + commit-on-cancel + PodcastSyncResult.Cancelled.
+(3) "'Preparing podcasts' takes ages": the pre-sync download loop called SavePodcastLibrary + RefreshPodcastShowPanel (which re-decodes the show artwork and refreshes two grids) after every single episode. Added a quiet mode to the download path used by sync: it still saves the JSON for crash safety but skips the per-episode panel refresh, and the sync refreshes the panel once at the end. The loop now reports "Downloading episodes (n/total)" and reacts to Stop immediately.
+Added CheckSyncCancellationContract to ContextMenuChecks (the Cancelled flag + "Sync stopped." summary prefix for both result types). Build clean, all checks pass. Device write paths not runtime-tested (no iPod) but reuse the existing services' proven patterns.</notes>
+    <filesChanged>HTunes.App/IPodSyncService.cs, HTunes.App/PodcastIPodSyncService.cs, HTunes.App/MainWindow.xaml.cs, HTunes.App/MainWindow.Podcasts.cs, tests/HTunes.ContextMenuChecks/Program.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-27">
+    <name>podcast icon not showing up during sync</name>
+    <prompt>music icon shows up and works fine</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>true</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-02 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags></tags>
+    <notes>The H-22 sync animation put the three-glyph assembly at the exact centre of the device strip, so the right-hand (podcast) glyph landed on top of the transcode combo / sync buttons - and the animation Canvas was the first child of its wrapper Grid, i.e. painted BEHIND those opaque controls, so the podcast glyph was hidden. The music glyph (left of centre) sat over the transparent status-text area and showed fine. Fixes: (1) moved the Canvas to be the last child of the wrapper Grid so it paints above the strip content (still IsHitTestVisible=false, so clicks pass through). (2) New AssemblyCentreX(): centres the assembly on the strip but clamps it left so the podcast glyph's right edge stays clear of the transcode combo / SyncCurrent / SyncAll controls (measured live via TransformToVisual), with a floor so it can't run off the left edge on a narrow window. LayoutSyncGlyphs, SyncGlyphCentre and SpawnSyncParticles all use it. Added CheckSyncGlyphPlacement to ContextMenuChecks (asserts the podcast glyph stays left of the combo at 980/1280/1600px and the layer never intercepts clicks). Build clean, all checks pass; verified both music and podcast glyphs render clear of the controls with a throwaway render probe (removed).</notes>
+    <filesChanged>HTunes.App/MainWindow.xaml, HTunes.App/MainWindow.SyncAnimation.cs, tests/HTunes.ContextMenuChecks/Program.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-21">
+    <name>crash when editing tags</name>
+    <prompt>the issue is the audio track doesnt exist anymore but its still in the library so it failes</prompt>
+    <requirements>rather than fail the whole process its trying to do just remove it from the library</requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>true</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>bugs</tags>
+    <notes>When "Write tags to audio files" was on and a selected track's audio file no longer existed on disk, TagBatchEdit.Apply threw FileNotFoundException in preflight and aborted the entire tag save - no track got tagged. TagBatchEdit.Apply now skips a vanished-file track instead of throwing, collects it, and exposes it via the new TagBatchEdit.MissingFiles property. TagApply_Click drops those stale entries from the library and every playlist (new DropMissingTrackEntries helper), folds the removal into the same undoable "Tag selected tracks" edit, and the status line reports how many tracks were saved vs. removed. Auto-tag (TagAuto_Click) counts a missing-file track as a failure rather than silently no-opping. Library-only edits (write-to-files off) still tag missing-file tracks as before. Updated the ContextMenuChecks TagChecks preflight test to assert the new skip/report/undo contract. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/TagEditing.cs, HTunes.App/MainWindow.Tags.cs, tests/HTunes.ContextMenuChecks/TagChecks.cs, tasks.xml</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-2">
+    <name>sorting issue</name>
+    <prompt>sorting by publish date for podcasts immediatly unsorts.</prompt>
+    <requirements>sorting fixed</requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>true</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags></tags>
+    <notes>The podcast episodes DataGrid had its ItemsSource reassigned to a fresh List on every RefreshPodcastShowPanel call, which destroyed the CollectionView holding the user's column sort (so any click-to-sort was wiped on the next refresh). Switched to a persistent ObservableCollection (PodcastEpisodeView) bound once, cleared/repopulated in place - matching the existing VisibleTracks pattern used by the music grid. Column sorting (including Published) now persists across refreshes. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/MainWindow.Podcasts.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-3">
+    <name>download x oldest</name>
+    <prompt>download x oldest podcasts doesnt actualy respect the actual age of the podcast episode</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>true</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>bug,download,podcasts</tags>
+    <notes>The per-show "keep X newest/oldest" sync selection ran through PodcastEpisodeOrdering.Order, which sorts by episode number first, then feed position, and only falls back to publish date - so "oldest" picked the lowest episode numbers rather than the genuinely oldest episodes. Added PodcastEpisodeOrdering.ByAge that sorts strictly by PublishedUtc (feed order / episode number only break ties when a feed omits pubDate) and pointed EpisodesForSync at it. The episode grid display still uses Order. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/PodcastModels.cs, HTunes.App/PodcastService.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-28">
+    <name>particle color for podcasts</name>
+    <prompt>music is blue and thats great, lets make podcasts red though so its different, and can we move the whole three icon assembly a bit to the left so it has more space to breath the transcode drop down is in the way</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-02 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags></tags>
+    <notes>Split the single sync-animation brush into SyncMusicBrush (#3C74C4 blue, unchanged) and SyncPodcastBrush (#C43C3C red). SpawnSyncParticles picks the brush from the active source, and the source glyphs are tinted to match (♫ blue, ◉ red; the ▣ iPod glyph stays neutral). Also nudged the whole assembly left: AssemblyCentreX now targets width/2 - 46 (was dead centre) and keeps 54px of clearance before the transcode combo / sync buttons (was 28), so the three glyphs have room to breathe and the podcast side is never crowded by the dropdown. Extended CheckSyncGlyphPlacement to assert music particles read blue and podcast particles read red. Build clean, all checks pass; confirmed visually with a render probe (removed).</notes>
+    <filesChanged>HTunes.App/MainWindow.SyncAnimation.cs, tests/HTunes.ContextMenuChecks/Program.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-23">
+    <name>audio file not found</name>
+    <prompt>rather than fail silently we need to remove it from the library database, specifically with auto tag or if we try to sync</prompt>
+    <requirements>missing files are removed</requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-02 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags></tags>
+    <notes>Auto-tag and music sync previously counted a track whose audio file had vanished from disk as a silent skip/failure and left the stale entry in the library. Added a shared MainWindow.RemoveMissingFilesFromLibrary(missing, context) helper (wrapping the existing DropMissingTrackEntries) that drops such tracks from allTracks and every playlist, records the removal on the undo stack ("Remove N missing files"), logs it, and refreshes the browser. TagAuto_Click now pre-filters the selection through it before the MusicBrainz lookups (and folds in any file that vanishes mid-run), and reports "N removed (missing file)" in the completion summary. SyncTracksAsync drops missing-file entries from the requested set before handing it to IPodSyncService and appends "Removed N tracks with missing files from the library." to the sync summary; this also covers "Sync all". Manual Tag-tab library-only edits still tag missing-file tracks as before (unchanged, still covered by tests). Added CheckMissingFileRemoval to ContextMenuChecks (removal from library + playlists, undo restores both, empty input is a no-op). Build clean, ContextMenuChecks pass. Device write path unchanged / not runtime-tested (no iPod).</notes>
+    <filesChanged>HTunes.App/MainWindow.Tags.cs, HTunes.App/MainWindow.xaml.cs, tests/HTunes.ContextMenuChecks/Program.cs, tests/HTunes.ContextMenuChecks/TagChecks.cs, tasks.xml</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-22">
+    <name>stupid visual idea</name>
+    <prompt>could we add a stupid visual thing
+in the middle of the ipod sync bar we add a ipod icon
+when we start syncing it fades in, when we stop syncing it fades out
+to the left a music icon
+to the right a podcast icon
+as its syncing one thing or another particles flow from the music or podcast icon into the ipod this continues until the sync finishes</prompt>
+    <requirements>syncing animations is done</requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-02 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>animations,visuals,sync</tags>
+    <notes>Added an ambient sync animation to the device strip (MainWindow.SyncAnimation.cs). A transparent, non-hit-testing Canvas (SyncAnimationLayer) now overlays the DeviceStrip border. It hosts three small muted-blue glyphs centred in the strip: ♫ (music) on the left, ▣ (iPod) in the middle, ◉ (podcast) on the right - matching the app's existing glyph iconography and #44698F accent. StartSyncAnimation(source) fades the iPod glyph plus whichever source glyph applies up to ~0.7-0.85 opacity (QuadraticEase, 320ms) and starts a 110ms DispatcherTimer that spawns 1-2 small Ellipse particles per tick at the source glyph; each particle animates its Canvas.Left/Top toward the iPod glyph over ~0.6-0.9s with an ease-in and fades 0.9-&gt;0, removing itself on completion. StopSyncAnimation fades all glyphs back to 0 over 480ms and stops the spawner; in-flight particles finish naturally. Wired into music sync (SyncTracksAsync: start after the sync UI setup, stop in finally) and podcast sync (SyncPodcastSelectionsAsync: same); "Sync all" flows music-&gt;podcast so the source glyph swaps mid-run. Timer also stopped on window close. Glyphs re-centre on SizeChanged. Build clean, ContextMenuChecks pass; verified the strip layout/rendering with a throwaway RenderTargetBitmap probe (removed).</notes>
+    <filesChanged>HTunes.App/MainWindow.SyncAnimation.cs, HTunes.App/MainWindow.xaml, HTunes.App/MainWindow.xaml.cs, HTunes.App/MainWindow.Podcasts.cs, tasks.xml</filesChanged>
+    <image></image>
+    <subtasks>
+      <subtask done="true">ipod icon</subtask>
+      <subtask done="true">music icon</subtask>
+      <subtask done="true">podcast icon</subtask>
+      <subtask done="true">fade in</subtask>
+      <subtask done="true">fade out</subtask>
+      <subtask done="true">particle effects</subtask>
+    </subtasks>
+  </task>
+  <task id="H-24">
+    <name>tab to select</name>
+    <prompt>when we press tab to move to a new text box, and theres already text in the box, automatically hilight all of it so we can override it</prompt>
+    <requirements>new tab behavior</requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-02 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>selection</tags>
+    <notes>New TextBoxBehaviors.InstallTabSelectAll() registers a process-wide GotKeyboardFocus class handler for TextBox (called once from the MainWindow constructor, so it also covers the metadata editor, settings and dialog windows). When a text box gains focus while Tab is physically down (i.e. Tab / Shift+Tab moved focus from another control) and it holds text, the whole value is selected on the next input-priority tick so typing overwrites it - matching Windows address-bar behaviour. Guards: skipped for the initial focus when a window opens (e.OldFocus null), read-only or disabled boxes, multi-line (AcceptsReturn) boxes like the download links box, empty boxes, and cases where the user already moved the caret or inline autocomplete kept focus (SelectionLength check + IsKeyboardFocused re-check). Mouse clicks are unaffected (Tab not held). Decision logic factored into the testable ShouldSelectAllOnFocus; covered by CheckTabSelectAll in ContextMenuChecks. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/TextBoxBehaviors.cs, HTunes.App/MainWindow.xaml.cs, tests/HTunes.ContextMenuChecks/Program.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-25">
+    <name>tab processing</name>
+    <prompt>when one of the tabs is processing (mainly tag, podcasts, or ipod) lets try to add an animation to the tag
+i want blue blurry circles that start small behind the text, expand outward, and fade out pulsing while it processes
+by while i processes i mean
+-podcasts are downloading
+-tags are being written
+-or ipod is syncing</prompt>
+    <requirements>animation in place</requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-02 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>animations,visuals</tags>
+    <notes>Added a "working" pulse behind the nav tabs. New TabPulse.IsActive attached property; the NavButton ControlTemplate now stacks a small blurred layer (BlurEffect radius 7, three #3C74C4 ellipses) behind the tab label, hidden until IsActive flips true, then a control-template trigger runs a looping storyboard: the three circles each scale 0.2-&gt;1.7 while fading 0.62-&gt;0 over 1.8s, staggered 0.6s apart, so they expand outward and pulse continuously; StopStoryboard on exit returns the layer to hidden. The nav Border got ClipToBounds so the glow can't spill onto the menu/workspace. MainWindow.UpdateTabProcessingIndicators (called from the existing UpdateBusyWorkspaces choke point) drives it: Tag tab pulses while isTagSaving (tags writing / auto-tag), Podcasts tab while activePodcastDownloads &gt; 0 (episodes downloading), iPod tab while isSyncing || isReconcilingPlayCounts || autoSyncRunning. Added CheckTabProcessingPulse to ContextMenuChecks. Build clean, all checks pass; verified the glow renders in the nav strip with a throwaway RenderTargetBitmap probe (removed).</notes>
+    <filesChanged>HTunes.App/TabPulse.cs, HTunes.App/MainWindow.xaml, HTunes.App/MainWindow.ContextMenus.cs, tests/HTunes.ContextMenuChecks/Program.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-1">
+    <name>startup time</name>
+    <prompt>start-up is starting to take longer, add a splash screen on first run</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>art,startup</tags>
+    <notes>Added a native WPF SplashScreen (System.Windows.SplashScreen, painted on its own thread so it stays visible while the UI thread is blocked loading the library). Shown from App.OnStartup on the normal foreground launch (not the --watch-ipod background watcher, not second-instance activation), and closed with a 250ms fade on MainWindow.ContentRendered. Artwork is a new baked asset HTunes.App/Assets/splash.png (embedded as a Resource): charcoal gradient backdrop with an iPod click-wheel key-art motif and the hTunes wordmark, matching the app's restrained dark/muted-blue design language. The PNG was generated with a throwaway GDI+ script (not committed).</notes>
+    <filesChanged>HTunes.App/App.xaml.cs, HTunes.App/HTunes.App.csproj, HTunes.App/Assets/splash.png</filesChanged>
+    <image></image>
+    <subtasks>
+      <subtask done="true">splash launched on start up</subtask>
+      <subtask done="true">closed once main window opens</subtask>
+      <subtask done="true">splash shows key art and some background image</subtask>
+    </subtasks>
+  </task>
+  <task id="H-4">
+    <name>tab in text boxes</name>
+    <prompt>when you press tag in the text box for tagging, skip to the next text box skip checkboxes</prompt>
+    <requirements>tag working correctly</requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>true</commit>
+    <build>true</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>control,ui</tags>
+    <notes>In the Tag tab inspector each field is a per-field "apply" CheckBox stacked above its TextBox, so Tab from a text box landed on the next checkbox. Set IsTabStop=false on those generated field checkboxes (InitializeTagEditor) so Tab now moves text box to text box; the checkbox still auto-checks when you type in its box and is still reachable by mouse. Built to builds/debug (added builds/ to .gitignore so build output is not committed). Build clean, ContextMenuChecks pass. Committed and pushed.</notes>
+    <filesChanged>HTunes.App/MainWindow.Tags.cs, .gitignore, tasks.xml</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-5">
+    <name>autocomplete tagging</name>
+    <prompt>when typing artist,genre,album artist, or album add autocomplete from all known existing entries in library, press tab to submit suggested text</prompt>
+    <requirements>autocomplete added</requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>tagging,ui</tags>
+    <notes>Added TextBoxAutoComplete: inline autocomplete that appends the best matching library value as a selected suggestion while typing at the end of the field. Tab commits the suggestion (and is swallowed so focus stays put); continuing to type or leaving the field discards it; programmatic/unfocused text changes are ignored. Wired to Artist / Album artist / Album / Genre in both the Tag tab inspector (suggestions from allTracks) and the per-track MetadataEditorWindow (library list now passed in via new optional constructor arg). Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/TextBoxAutoComplete.cs, HTunes.App/MainWindow.Tags.cs, HTunes.App/MetadataEditorWindow.xaml.cs, HTunes.App/MainWindow.History.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-6">
+    <name>shuffle and repeat</name>
+    <prompt>add shuffle and repeat controls to playback section</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>playback,library</tags>
+    <notes>The shufflePlayback / repeatPlayback state already drove MoveSelection and MediaEnded but was only reachable from the Playback menu. Added Shuffle (left of transport) and Repeat-current-track (right of transport) ToggleButtons to the playback bar with a restrained ToggleButton style (pale accent when active, matching the nav treatment). Menu items and buttons stay in sync via SyncShufflePlayback / SyncRepeatPlayback. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/MainWindow.xaml, HTunes.App/MainWindow.xaml.cs, HTunes.App/MainWindow.Menus.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-7">
+    <name>more info for playback</name>
+    <prompt>show more info in the playback area, put text on TOP of the album art</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>ui,playback</tags>
+    <notes>Rebuilt the playback bar (row height 62 to 82): 60px album-art thumbnail on the left with the now-playing title/artist laid over the bottom of the art on a dark scrim; centre column keeps the transport row and adds a progress bar with elapsed / total time either side; right column shows "N of M / in queue" (or "Podcast / episode"). A 500ms playbackTimer refreshes position/progress/queue while playing. New SetNowPlaying/ResetNowPlaying/UpdatePlaybackDisplay helpers; wired from PlaySelected, the podcast play path, Stop, and both podcast finalize paths. Art loads from track ArtworkPath or the podcast episode artwork URL. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/MainWindow.xaml, HTunes.App/MainWindow.xaml.cs, HTunes.App/MainWindow.Podcasts.cs</filesChanged>
+    <image></image>
+    <subtasks>
+      <subtask done="true">album art</subtask>
+      <subtask done="true">playback position / total length</subtask>
+      <subtask done="true">progress bar</subtask>
+      <subtask done="true">current track index / tracks queued</subtask>
+    </subtasks>
+  </task>
+  <task id="H-8">
+    <name>yellow background</name>
+    <prompt>the yellow background is only supposed to be there when the track is missing data from the following list, nothing else
+-artist
+-albumn
+-genre
+-track
+(NOTE: unknown, missing, or "music" count as missing data)</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>feature fix</tags>
+    <notes>Track.HasMissingMetadata (the only driver of the pale-yellow row highlight in the Music and Tag grids) previously also flagged a missing track number or year. Narrowed it to exactly Title / Artist / Album / Genre, and extended the "missing" test so a value of "missing" or "music" (any case, trimmed) counts as missing alongside blank and "Unknown*". Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/MainWindow.xaml.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-9">
+    <name>double click</name>
+    <prompt>double clicking a track or podcast episode causes it to play (not artists or albumns)</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>playback,control</tags>
+    <notes>Added MouseDoubleClick on PodcastEpisodesGrid to play the double-clicked episode. Added a shared DoubleClickOnRow guard so a double-click only plays when it lands on an actual item row (not a column header, and not an action button inside the row) and applied it to the existing TracksGrid double-click too. Artist/Album lists keep their drill-down double-click (unchanged). Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/MainWindow.xaml, HTunes.App/MainWindow.xaml.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-10">
+    <name>album art crop</name>
+    <prompt>lets add an option to crop album art, a lot of mine is adding bars on the side, so when we resize to a square, make sure we take only the center section (im seeing tons of bars on the left and right side)</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>metadata</tags>
+    <notes>Added a "Crop to fill (trim side/top bars)" checkbox under the Tag editor's resize option. TagArtwork.Prepare gained a crop mode: instead of fitting the whole image inside the target (which leaves pillar/letterbox bars), it scales to cover the target size (max ratio) and takes the centre WxH region via CroppedBitmap. Threaded a CropArtwork flag through TagPatch and TagApply_Click; reset alongside the resize checkbox. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/MainWindow.xaml, HTunes.App/MainWindow.Tags.cs, HTunes.App/TagEditing.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-11">
+    <name>exclude from shuffle</name>
+    <prompt>on standard itunes you can tell it to exclude (or include) a selection from shuffle i want that in my right click menu also</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>sync</tags>
+    <notes>Added Track.ExcludeFromShuffle (persisted in library.json). New checkable "Exclude from shuffle" item in the track right-click menu that toggles the whole selection and is undoable; the check shows when every selected track is excluded. Shuffle in MoveSelection now skips excluded tracks (falling back to the full set only if every other track is excluded). NOTE: this is a library/local-playback flag; it is not yet written to the iPod iTunesDB skip-when-shuffling flag on sync. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/MainWindow.xaml.cs, HTunes.App/MainWindow.ContextMenus.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-12">
+    <name>remove from ipod</name>
+    <prompt>I also need a way to remove tracks from the ipod, and to delete them (and the associated file if it was copied or moved) from the library</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>sync</tags>
+    <notes>Two parts. (1) New IPodTrackRemovalService.Remove: matches device tracks by resolved media path, drops the iTunesDB entries and deletes their files, with a DB backup + media restore on failure (modeled on PodcastIPodSyncService). Exposed as "Remove from iPod..." in the track right-click menu when browsing the iPod (non-podcast tracks); refreshes the device list after. (2) RemoveContextTracks now detects files under the managed hTunes music/download folders and offers Yes/No/Cancel: Yes also deletes those files from disk (stopping playback first if needed), No is the old library-only removal. Build clean, ContextMenuChecks pass. iPod removal path itself not runtime-tested (no device available).</notes>
+    <filesChanged>HTunes.App/IPodTrackRemovalService.cs, HTunes.App/MainWindow.ContextMenus.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-13">
+    <name>playlist naming</name>
+    <prompt>when creating a new playlist automatically enter rename mode before anything else</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>control,metadata</tags>
+    <notes>The "+ New playlist" toolbar button created "New Playlist N" straight away; it now prompts for the name first via AskPlaylistName (auto-focused, text pre-selected) and only creates the playlist on confirm - matching the two context-menu "New playlist..." entry points that already worked this way. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/MainWindow.xaml.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-14">
+    <name>sort order</name>
+    <prompt>when sorting by artist, we should then sort by album inside that artist, and finally by track id or name if theres no id</prompt>
+    <requirements>everything sorts correctly</requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>meta-data</tags>
+    <notes>Added a Sorting handler on the Music and Tag track grids. Clicking Artist now sorts Artist then Album then Disc then Track# then Title (so unnumbered tracks fall together ordered by name); Album and Genre headers get the analogous cascade. Only the clicked column toggles asc/desc and shows the glyph; the sub-sorts stay ascending. Other columns keep plain single-column sorting. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/MainWindow.xaml.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-15">
+    <name>playlist duplication check</name>
+    <prompt>dont allow duplicate tracks in playlists, just skip them</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>playlists</tags>
+    <notes>Individual add paths already guarded against re-adding a track, but nothing enforced it centrally. ChangePlaylistMembership (the choke point for every playlist edit) now de-dupes TrackIds after each change (keeping the first occurrence), and LoadLibrary de-dupes any playlist that already had repeats. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/MainWindow.History.cs, HTunes.App/MainWindow.xaml.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-16">
+    <name>selection undo redo</name>
+    <prompt>incluide selection in undo/redo history(if i accidentally click something else while trying to select stuff hitting ctrl+z should reselect everything i just lost)</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>selection,control</tags>
+    <notes>The main track grid now pushes a "Restore selection" entry onto the shared undo stack whenever a selection of 2+ rows loses rows (collapses or is replaced) - so Ctrl+Z after a misclick reselects what was lost, Ctrl+Y re-applies. Growing a selection (rubber-band / Ctrl+click adding) records nothing. Browser refreshes and history-driven reselection are suppressed so they don't create spurious entries, and ApplyHistory fast-paths selection entries so it doesn't rebuild the library view. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/MainWindow.History.cs, HTunes.App/MainWindow.xaml.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-17">
+    <name>download metadata overrides</name>
+    <prompt>lets add tag override fields to the download, so you can override all downloaded tracks metadata with whatever is found in them when its done (these reset when you clear the links box, defaults to dont override)</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>download,metadata</tags>
+    <notes>Added an override row to the Download tab (Artist / Album artist / Album / Genre, with the same inline autocomplete as the Tag editor). Values are snapshotted when a batch starts and applied to every track after its own tags are read (blank = keep the file's tag); a filled override also marks the track library-managed. The Clear button now clears these fields along with the links box; empty by default = no override. Library-only (audio files not rewritten), matching existing download-import behaviour. Updated the yt-dlp import test for the new optional parameter. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/MainWindow.xaml, HTunes.App/MainWindow.Downloads.cs, HTunes.App/MainWindow.xaml.cs, tests/HTunes.ContextMenuChecks/YtDlpChecks.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-18">
+    <name>playlists missing from ipod page</name>
+    <prompt>on the ipod tab, add a field for viewing playlists so i can delete and see them (and what songs are in them) and make sure to sync any playlist changes (new songs to an existing playlist, or removals renaming etc)</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>sync</tags>
+    <notes>New IPodPlaylistReader (read device playlists + their track keys; Delete via Clickwheel PlaylistList.Remove(pl, false) keeping songs, with DB backup/restore). iPod tab now shows an "IPOD PLAYLISTS" list in the sidebar slot (name + count); selecting one lists its songs in the track grid; right-click has Refresh and "Delete this playlist from the iPod" (smart/podcast playlists excluded). "Sync all music" now also reconciles every library playlist to the device via new IPodPlaylistSyncService.SyncAll - membership rebuilt each time (covers added/removed songs), and a playlist renamed in hTunes drops its old-named device copy (tracked via new Playlist.PreviousNames, cleared after a successful sync). On-device playlists hTunes never created are left alone. Build clean, ContextMenuChecks pass; device-write paths not runtime-tested (no iPod) but reuse the existing sync services' proven Clickwheel patterns.</notes>
+    <filesChanged>HTunes.App/IPodPlaylistReader.cs, HTunes.App/IPodPlaylistSyncService.cs, HTunes.App/MainWindow.xaml, HTunes.App/MainWindow.xaml.cs, HTunes.App/MainWindow.ContextMenus.cs, HTunes.App/MainWindow.Navigation.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-19">
+    <name>rename tab</name>
+    <prompt>for rename lets add the "cut before character" and "cut after character" options which also delete the character listed</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>rename,metadata</tags>
+    <notes>Added rules 3 "Cut before text" and 4 "Cut after text" to the Rename tab (existing rules renumbered to 5-8). Cut-before finds the first occurrence of the entered text and drops it plus everything before it; cut-after drops it plus everything after it; honours the Ignore-case option; no-op if the text isn't found. Threaded CutBefore/CutBeforeText/CutAfter/CutAfterText through RenameOptions (Validate + Transform) and ReadRenameOptions. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/LibraryRenameService.cs, HTunes.App/MainWindow.Rename.cs</filesChanged>
+    <image></image>
+  </task>
+  <task id="H-20">
+    <name>rate-limit</name>
+    <prompt>also im being rate limited by music brainz, im not sure why, maybe we should add more info to the fial/success info?</prompt>
+    <requirements></requirements>
+    <inProgress>false</inProgress>
+    <done>true</done>
+    <bug>false</bug>
+    <error>false</error>
+    <errorMessage></errorMessage>
+    <lockKey></lockKey>
+    <locked>false</locked>
+    <archived>true</archived>
+    <blockedBy></blockedBy>
+    <dateStarted>2026-09-01 00:00</dateStarted>
+    <dueDate></dueDate>
+    <commit>false</commit>
+    <build>false</build>
+    <release>false</release>
+    <merge>false</merge>
+    <branch>main</branch>
+    <tags>auto-tag</tags>
+    <notes>Root cause of the rate-limiting: the throttle timestamp was recorded only after each response returned and a single auto-tag lookup fires 1-2 requests, so bursts slipped under the 1s window and MusicBrainz answered 503, which surfaced only as a generic "failed". Fixes: GetJsonAsync now stamps the timestamp at request start (true request-to-request spacing), widened to 1200ms, and on 503/429 it honours the Retry-After header and retries up to 2x before throwing a typed MusicBrainzRateLimitException. Auto-tag now counts rate-limit hits separately, shows a live "Paused on X" status with a cool-down, and the completion summary explains the ~1 req/sec limit and surfaces the last error instead of a bare count. Build clean, ContextMenuChecks pass.</notes>
+    <filesChanged>HTunes.App/MusicBrainzTagService.cs, HTunes.App/MainWindow.Tags.cs</filesChanged>
+    <image></image>
+  </task>
+</tasks>

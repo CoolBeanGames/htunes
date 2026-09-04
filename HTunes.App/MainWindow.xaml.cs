@@ -633,7 +633,8 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             DebugLog.Write("Listening", "Reconciliation failed", ex);
-            DeviceDetailsText.Text = $"  •  Play counts could not be synchronized: {ex.GetBaseException().Message}";
+            var msg = ex.GetBaseException().Message;
+            DeviceDetailsText.Text = $"  •  Play counts could not be synchronized: {(msg.Length > 50 ? msg[..49] + "…" : msg)}";
         }
         finally { isReconcilingPlayCounts = false; RefreshDevice(); UpdateBusyWorkspaces(); }
     }
@@ -796,7 +797,7 @@ public partial class MainWindow : Window
         {
             DebugLog.Write("Music sync", $"Starting {requested.Count} tracks; randomFill={randomFill}; preset={TranscodeComboBox.SelectedValue}");
             if (!await EnsureIPodPreparedAsync(device)) return;
-            var progress = new Progress<SyncProgress>(p => DeviceDetailsText.Text = $"  •  {p.Message}  ({Math.Min(p.Completed + 1, p.Total)}/{p.Total})");
+            var progress = new Progress<SyncProgress>(p => DeviceDetailsText.Text = $"  •  {(p.Message.Length > 40 ? p.Message[..39] + "…" : p.Message)}  ({Math.Min(p.Completed + 1, p.Total)}/{p.Total})");
             var result = requested.Count == 0
                 ? new SyncResult(0, 0, 0, 0, 0, 0)
                 : await Task.Run(() => IPodSyncService.Sync(device.RootPath, requested, allTracks, randomFill, preset, progress, syncToken), syncToken);
@@ -813,7 +814,7 @@ public partial class MainWindow : Window
             }
             if (playlist is not null)
             {
-                DeviceDetailsText.Text = $"  •  Updating playlist {playlist.Name}";
+                DeviceDetailsText.Text = $"  •  Updating playlist {(playlist.Name.Length > 40 ? playlist.Name[..39] + "…" : playlist.Name)}";
                 playlistSummary = (await Task.Run(() => IPodPlaylistSyncService.Sync(device.RootPath, playlist, allTracks))).Summary;
             }
             else if (randomFill && Playlists.Count > 0)

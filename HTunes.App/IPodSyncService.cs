@@ -43,9 +43,10 @@ internal static class IPodSyncService
 
         var ipodTrackList = new List<IPodTrack>();
         foreach (var track in ipod.Tracks) ipodTrackList.Add(track);
-        var existingByKey = ipodTrackList
+        var existingByKeyGroups = ipodTrackList
             .GroupBy(t => TrackIdentity.Key(t.Title, t.Artist, t.Album, checked((int)t.TrackNumber)), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+        var existingByKey = existingByKeyGroups.ToDictionary(item => item.Key, item => item.Value[0], StringComparer.OrdinalIgnoreCase);
         var existingByMarker = ipodTrackList.Where(track => TrackIdentity.MarkerId(track.Comment) is not null)
             .GroupBy(track => TrackIdentity.MarkerId(track.Comment)!.Value).ToDictionary(group => group.Key, group => group.First());
         var candidates = new List<SyncCandidate>();
@@ -60,23 +61,27 @@ internal static class IPodSyncService
             existingByMarker.TryGetValue(source.Id, out var existing);
             var markerMatched = existing is not null;
             var desiredKey = TrackIdentity.Key(source.Title, source.Artist, source.Album, source.TrackNumber);
-            if (markerMatched && existingByKey.TryGetValue(desiredKey, out var duplicate) && duplicate.Id != existing!.Id)
-            {
-                // A retag may collide with an older/manual iPod entry. Adopt the already-present
-                // destination identity and skip this item; one duplicate must never abort the batch.
-                duplicate.Comment = TrackIdentity.Marker(source.Id);
-                existing.Comment = "";
-                databaseDirty = true;
-                var duplicateFingerprint = DesiredFingerprint(source, preset);
-                alreadyPresent++;
-                current.Add((source, duplicateFingerprint));
-                DebugLog.Write("Music sync", $"Skipped duplicate identity while retagging track={source.Id}");
-                continue;
-            }
             if (existing is null) existingByKey.TryGetValue(desiredKey, out existing);
             if (existing is null)
                 foreach (var previous in source.PreviousMetadataIdentities ?? [])
                     if (existingByKey.TryGetValue(previous, out existing)) break;
+            if (existing is not null && existingByKeyGroups.TryGetValue(desiredKey, out var identityMatches) &&
+                FindDifferentReference(identityMatches, existing) is { } duplicate)
+            {
+                // iTunesDB files can already contain duplicate identities (for example after tags
+                // were edited by another application). The old single-value lookup only inspected
+                // the first item in the group, so a second copy could remain hidden until Add threw.
+                // Adopt the destination copy and leave the unrelated/old record alone.
+                duplicate.Comment = TrackIdentity.Marker(source.Id);
+                if (markerMatched) existing.Comment = "";
+                claimed.Add(duplicate.Id);
+                databaseDirty = true;
+                var duplicateFingerprint = DesiredFingerprint(source, preset);
+                alreadyPresent++;
+                current.Add((source, duplicateFingerprint));
+                DebugLog.Write("Music sync", $"Adopted duplicate iPod identity for track={source.Id}");
+                continue;
+            }
             if (existing is not null && !claimed.Add(existing.Id)) existing = null;
             if (existing is not null && TrackIdentity.MarkerId(existing.Comment) != source.Id)
             {
@@ -168,7 +173,28 @@ internal static class IPodSyncService
                         if (membership.Playlist.ContainsTrack(existing)) membership.Playlist.RemoveTrack(existing);
                     if (!ipod.Tracks.Remove(existing)) throw new InvalidOperationException($"The existing iPod copy of {source.Title} could not be replaced.");
 
-                    var replacement = ipod.Tracks.Add(CreateNewTrack(source, library, syncPath));
+                    IPodTrack replacement;
+                    try
+                    {
+                        replacement = ipod.Tracks.Add(CreateNewTrack(source, library, syncPath));
+                    }
+                    catch (TrackAlreadyExistsException collision)
+                    {
+                        // Be defensive against malformed databases whose duplicate was not visible
+                        // during candidate discovery. The old copy is already backed up and removed;
+                        // adopt Clickwheel's surviving copy instead of rolling back the whole sync.
+                        replacement = collision.ExistingTrack;
+                        replacement.Comment = TrackIdentity.Marker(source.Id);
+                        foreach (var membership in memberships)
+                            if (!membership.Playlist.ContainsTrack(replacement))
+                                membership.Playlist.AddTrack(replacement, Math.Min(membership.Position, membership.Playlist.TrackCount));
+                        databaseDirty = true;
+                        alreadyPresent++;
+                        synced.Add((source, candidate.Fingerprint));
+                        remaining += reclaimed;
+                        DebugLog.Write("Music sync", $"Adopted late duplicate iPod identity for track={source.Id}");
+                        continue;
+                    }
                     PreserveIPodState(existing, replacement);
                     foreach (var membership in memberships)
                         membership.Playlist.AddTrack(replacement, Math.Min(membership.Position, membership.Playlist.TrackCount));
@@ -225,6 +251,11 @@ internal static class IPodSyncService
     // must not be re-copied - the fingerprint is authoritative, not the NeedsReplacement heuristic.
     internal static bool FingerprintMatchesLastSync(Track source, string deviceId, string fingerprint) =>
         source.SyncedIPodFingerprints?.GetValueOrDefault(deviceId) is { } known && known == fingerprint;
+
+    // Identity groups can contain more than one physical iPod record. Do not use First() for
+    // collision detection: the first record may be the exact record about to be replaced.
+    internal static T? FindDifferentReference<T>(IEnumerable<T> matches, T existing) where T : class =>
+        matches.FirstOrDefault(item => !ReferenceEquals(item, existing));
 
     private static bool IPodMediaPresent(string rootPath, IPodTrack existing) =>
         File.Exists(ResolveIPodPath(rootPath, existing.FilePath));

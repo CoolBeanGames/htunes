@@ -139,6 +139,10 @@ internal static partial class Program
             Require(!IPodSyncService.FingerprintMatchesLastSync(track, "serial:OTHERPOD", fingerprint), "Being current on one device must not imply being current on another.");
             track.Genre = "Jazz";
             Require(!IPodSyncService.FingerprintMatchesLastSync(track, "serial:TESTPOD", IPodSyncService.DesiredFingerprint(track, preset)), "Editing a synced track must drop it out of the current state.");
+            var firstIPodCopy = new object();
+            var hiddenDuplicate = new object();
+            Require(ReferenceEquals(IPodSyncService.FindDifferentReference([firstIPodCopy, hiddenDuplicate], firstIPodCopy), hiddenDuplicate),
+                "Replacement collision detection must find a second matching iPod record even when the record being replaced is first in the identity group.");
             Require(MusicBrainzTagService.SimplifyGenre(["hip hop", "r&b"], "", "") == "Rap" &&
                 MusicBrainzTagService.SimplifyGenre(["video game soundtrack", "metal"], "", "") == "Game Music" &&
                 MusicBrainzTagService.SimplifyGenre([], "My Chemical Romance", "") == "Emo", "Auto-tag genre policy must apply the requested broad categories and soundtrack priority.");
